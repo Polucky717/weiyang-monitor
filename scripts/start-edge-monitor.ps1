@@ -1,4 +1,4 @@
-<#
+﻿<#
   Edge / Chrome monitor launcher.
 
   This file is deliberately pure ASCII. Windows PowerShell 5.1 (the engine the

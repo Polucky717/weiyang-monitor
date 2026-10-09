@@ -17,12 +17,6 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run-monitor.ps1
 powershell -ExecutionPolicy Bypass -File .\scripts\run-monitor.ps1 -Relogin
 ```
 
-首次启动时可以同时配置开机自启：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\run-monitor.ps1 -InstallStartup
-```
-
 也可以手动执行下面的完整流程：
 
 在 PowerShell 中进入项目目录后执行：
@@ -65,6 +59,12 @@ node tools\install-autostart.js
 ```
 
 这会在当前用户的启动目录创建快捷方式 `未央观察站.lnk`，不需要管理员权限。开机后在后台监测，**不打开**雨课堂网站、监测网页，也**不会出现任何窗口**；桌面通知仍会按设置弹出。
+
+> **自启只有一个入口，就是这个 `node tools\install-autostart.js`。** 早期版本还提供过
+> `scripts\install-startup.ps1` 和 `run-monitor.ps1 -InstallStartup` 两条 PowerShell 路径，
+> 它们写的是**同一个** `未央观察站.lnk`，但目标指向 `launchers\launch-monitor.vbs` —— 那个
+> `.vbs` 的 PowerShell 日志调用在这台机器上静默失败，会造成"自启失效、`startup.log` 不增长"
+> 的假象，而且会和上面这条命令互相覆盖。这两条路径已删除，不要再使用。
 
 **关掉开机自启**（同样不需要管理员权限）：
 
@@ -125,6 +125,7 @@ node tools\install-autostart.js --check
 6. **快捷方式必须用 `WScript.Shell` COM 接口创建，不要手写 `.lnk` 二进制。** 手写那版能自洽解析，但 Windows 解析不出目标（读回的 `TargetPath` 是空），双击毫无反应。结构差异在 `LinkTargetIDList`：根项应是 "My Computer" 的 CLSID 项（`1f 50` + 16 字节 CLSID），而不是直接从盘符项 `1f 2a` 开始。
 7. **`curl` 的探测结果要按字符串比较。** 后台没在跑时 `curl -w "%%{http_code}"` 输出的是 `000` 而不是空，所以判断写成 `if "%BACKEND_UP%"=="200"`，不能拿"为空"当"没起来"。
 8. **日志出现 `vbs-ERROR`** 说明 `.vbs` 找不到批处理（一般是被移动或删掉了）；出现 `autostart-ERROR` 会附带具体原因。
+9. **改完 `.ps1` 记得重跑 `node tools\fix-ps1-encoding.js`。** 含中文的 `.ps1` 必须是 UTF-8 **带 BOM**：PS 5.1 对无 BOM 的文件按 ANSI(GBK) 解码，中文注释会变乱码。但很多编辑器（包括自动化改文件的方式）保存时会去掉 BOM，所以这个脚本的作用就是"每次改完跑一遍"，幂等、可反复运行。`.cmd` 不能靠 BOM 解决（cmd 会把 BOM 当命令的一部分），只能写成纯 ASCII。
 
 </details>
 
@@ -160,7 +161,7 @@ node tools\install-autostart.js --check
 | `src/` | `server.js` | 后台：抓取、定时扫描、状态接口、桌面通知。它的 `ROOT` 指向项目根，因为配置、登录态、`logs/` 都在那边 |
 | `scripts/` | `run-monitor.ps1`、`run-connected-monitor.ps1`、`start-monitor.ps1` | 启动与依赖检查（会在项目根执行 `npm start`） |
 | `scripts/` | `start-edge-monitor.ps1`、`wrap-npm-start.ps1` | 以调试模式启动 Edge/Chrome，并把 `npm start` 的输出记入 `logs/server.log` |
-| `scripts/` | `install-startup.ps1`、`log-startup-event.ps1` | 早期版本的自启注册与审计日志。**自启已改由 `tools\install-autostart.js` + 根目录 `start-autostart.vbs`/`.cmd` 负责**，这两个只在手动场景下还有用 |
+| `scripts/` | `log-startup-event.ps1` | 早期的自启审计日志。自启已改由根目录 `start-autostart.cmd` 直接写 `startup.log`（`cmd` 的 `echo >>` 不会静默失败），这个脚本现在没有调用方 |
 | `scripts/` | `windows-notify.ps1` | Windows 桌面提醒窗口（轨迹日志在 `logs/notify-trace.log`） |
 | `scripts/` | `test-live-notification.ps1` | 通知自检 |
 | `launchers/` | `launch-monitor.vbs` | 手动双击启动（隐藏窗口调用 `scripts/start-edge-monitor.ps1`）。注意它内部的 PowerShell 日志调用在本机静默失败，所以不再用于开机自启 |
@@ -180,6 +181,7 @@ node .\tools\build-icon-assets.js          # 由原始线稿重新生成图标�
 node .\tools\build-release-zip.js          # 打出发布用的 weiyang-monitor-github.zip
 node .\tools\check-icons.js                # 核对图标渲染（尺寸、着色、是否残留破图）
 node .\tools\check-file-lists.js           # 核对打包与发布两份文件清单一致、且文件都在
+node .\tools\fix-ps1-encoding.js           # 给含中文的 .ps1 补 UTF-8 BOM（编辑后跑一次）
 node .\tools\install-autostart.js          # 安装开机自启（--remove 关闭，--check 查看状态）
 ```
 

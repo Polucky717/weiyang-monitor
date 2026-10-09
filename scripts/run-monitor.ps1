@@ -1,6 +1,5 @@
 ﻿param(
   [switch]$Relogin,
-  [switch]$InstallStartup,
   [switch]$SkipBrowserInstall
 )
 
@@ -42,10 +41,6 @@ $loginMarker = Join-Path $ProjectRoot '.weiyang-login-complete'
 if ($Relogin -or -not (Test-Path -LiteralPath $loginMarker)) {
   Write-Host "`n首次运行需要登录未央雨课堂。浏览器打开后完成登录，再回到此窗口按 Enter。" -ForegroundColor Yellow
   Invoke-Step $npmCommand @('run', 'login')
-}
-
-if ($InstallStartup) {
-  Invoke-Step 'powershell.exe' @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'install-startup.ps1'))
 }
 
 Write-Host "`n后台即将启动：http://127.0.0.1:8787/" -ForegroundColor Green

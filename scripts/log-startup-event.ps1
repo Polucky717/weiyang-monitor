@@ -1,4 +1,4 @@
-<#
+﻿<#
   Startup-chain event logger
 
   Purpose: append one line to startup.log at each key node of the launch chain

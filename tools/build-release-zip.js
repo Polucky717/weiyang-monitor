@@ -45,11 +45,11 @@ const FILES = [
   'tools/build-release-zip.js',
   'tools/check-file-lists.js',
   'tools/check-icons.js',
+  'tools/fix-ps1-encoding.js',
   'tools/install-autostart.js',
   'tools/publish-to-github.js',
 
   // 运行脚本（PowerShell / cmd）
-  'scripts/install-startup.ps1',
   'scripts/log-startup-event.ps1',
   'scripts/run-connected-monitor.ps1',
   'scripts/run-monitor.ps1',
