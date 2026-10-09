@@ -1,0 +1,8 @@
+node_modules/
+.weiyang-browser/
+.weiyang-login-complete
+.weiyang-state.json
+.weiyang-state.json.tmp
+monitor.config.json
+debug.log
+tmp-*.png

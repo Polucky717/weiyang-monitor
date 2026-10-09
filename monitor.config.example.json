@@ -1,0 +1,24 @@
+{
+  "siteUrl": "https://weiyang.yuketang.cn/pro/portal/home/",
+  "activityUrl": "https://weiyang.yuketang.cn/pro/portal/trainclasslist",
+  "pollMinutes": 30,
+  "selectors": {
+    "activityCard": "[data-activity-id], .activity-card, .project-card, .course-item",
+    "title": ".activity-title, .project-title, .card-footer, [class*=activityTitle], [class*=projectTitle], [data-activity-title]",
+    "description": ".description, .intro, .desc, [class*=description], [class*=intro]",
+    "section": ".activity-section, .project-section, .section-name, .card-footer, [class*=activitySection], [class*=projectSection]",
+    "type": ".activity-type, .activity-kind, .event-type, .card-footer, [class*=activity-type], [class*=event-type], [class*=kind]",
+    "points": ".points, .score, .integral, [class*=point], [class*=score]",
+    "deadline": ".deadline, .time, [class*=deadline], [class*=time]",
+    "pointRow": ".point-item, .score-item, [class*=integral-item], [class*=point-item]",
+    "profileName": "[data-user-name], .user-name, .profile-name, [class*=userName], [class*=nickname]",
+    "profileMeta": ".user-meta, .profile-meta, .user-info, [class*=userInfo], [class*=student]",
+    "profileAvatar": "[data-user-avatar], .user-avatar, [class*=user-avatar]",
+    "profileTotalPoints": ".total-points, .total-score, .my-score, [class*=totalPoint], [class*=totalScore]",
+    "profileRecentActivity": ".recent-activity, .last-activity, [class*=recentActivity], [class*=lastActivity]"
+  },
+  "pointThresholds": {
+    "多彩未央": 1,
+    "default": 5
+  }
+}

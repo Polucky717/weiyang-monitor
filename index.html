@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f7f9fc" />
+    <title>未央活动监测器</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true"><img class="tinted-icon" id="brandSheep" alt="" /></div>
+          <div class="brand-text">
+            <strong>未央成长活动提醒</strong>
+            <span>活动积分监测器</span>
+          </div>
+        </div>
+
+        <nav class="side-nav" aria-label="主导航">
+          <a class="active" href="#overview"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 22 22" focusable="false"><path d="M11 3.5 18.5 11 11 18.5 3.5 11Z" /></svg></span>活动总览</a>
+          <a href="#points"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 22 22" focusable="false"><path d="M3 18h4v-4h4v-4h4V6h4" /></svg></span>积分进度</a>
+          <a href="#settings"><span class="nav-icon" aria-hidden="true"><img class="tinted-icon" id="navSettingsIcon" alt="" /></span>监测设置</a>
+        </nav>
+
+        <div class="sidebar-bottom">
+          <div class="help-card">
+            <div class="help-icon">?</div>
+            <div><strong>如何工作？</strong><p>每次扫描都会筛出仍能计入积分的活动。</p></div>
+          </div>
+          <div class="profile-card">
+          <div class="profile-head"><div class="avatar" id="profileAvatar">·</div><div class="profile-identity"><strong id="profileName">等待主页抓取</strong><small id="profileMeta">个人信息暂不可用</small></div></div>
+            <div class="profile-stats"><div><strong id="profileTotalPoints">—</strong><small>当前积分</small></div><div><strong id="profileRecentPoints">—</strong><small>最近获得</small></div></div>
+            <div class="profile-recent"><span class="recent-dot"></span><div><small>最近活动</small><strong id="profileRecentActivity">暂无已抓取记录</strong></div></div>
+          </div>
+        </div>
+      </aside>
+
+      <main class="main-content">
+        <header class="topbar">
+          <div class="breadcrumb"><span>工作台</span><b>/</b><strong>活动总览</strong></div>
+          <div class="top-actions"><button class="icon-button" aria-label="通知" id="notificationBell"><span class="bell-dot"></span>♢</button><div class="date-label" id="dateLabel"></div></div>
+        </header>
+
+        <section class="page-heading" id="overview">
+          <div><p class="eyebrow">MONITORING DASHBOARD</p><h1>早一点发现，积分不漏掉</h1><p class="subheading">自动关注未央雨课堂的新活动，只提醒真正值得报名的机会。</p></div>
+          <button class="primary-button" id="scanButton"><span class="refresh-icon">↻</span><span>立即扫描</span></button>
+        </section>
+
+        <section class="status-strip">
+          <div class="status-main"><span class="live-pulse"></span><div><strong>正在监测</strong><span id="monitorUrl">weiyang.yuketang.cn/pro/portal/home/</span></div></div>
+          <div class="status-meta"><span>上次扫描 <b id="lastScan">刚刚</b></span><span class="status-divider"></span><span>每 <b id="intervalLabel">30 分钟</b>自动更新</span><button class="text-button" id="pauseButton">暂停监测</button></div>
+        </section>
+
+        <section class="stats-grid" aria-label="概览数据">
+          <article class="stat-card"><div class="stat-top"><span>待关注活动</span><span class="stat-symbol">✦</span></div><div class="stat-value" id="attentionCount">—</div><div class="stat-foot"><span id="newActivityCount">尚未扫描</span></div></article>
+          <article class="stat-card"><div class="stat-top"><span>可获得积分</span><span class="stat-symbol coin">●</span></div><div class="stat-value" id="availablePoints">—<span class="unit">分</span></div><div class="stat-foot muted" id="activitySourceCount">等待主页数据</div></article>
+          <article class="stat-card"><div class="stat-top"><span>当前累计积分</span><span class="stat-symbol green">✓</span></div><div class="stat-value" id="dashboardTotalPoints">—<span class="unit">分</span></div><div class="stat-foot muted">数据来自个人主页</div></article>
+          <article class="stat-card"><div class="stat-top"><span>监测状态</span><span class="stat-symbol green">◉</span></div><div class="stat-value status-value" id="monitorStatusValue">等待</div><div class="stat-foot muted" id="monitorStatusDetail">尚未连接本地后台</div></article>
+        </section>
+
+        <div class="content-grid">
+          <section class="panel activities-panel">
+            <div class="panel-heading"><div><h2>正在报名中的活动</h2><p>仅显示未央雨课堂当前开放报名的活动</p></div><div class="filter-wrap"><button class="filter-button" id="filterButton">全部板块 <span>⌄</span></button><div class="filter-menu" id="filterMenu"><button data-filter="全部板块">全部板块</button></div></div></div>
+            <div class="activity-list" id="activityList"></div>
+            <div class="empty-state hidden" id="emptyState"><div class="empty-icon">✓</div><strong>暂无正在报名的活动</strong><p id="emptyHint">当前没有开放报名的活动。</p></div>
+            <button class="load-more" id="allActivitiesButton">查看全部活动 <span>→</span></button>
+          </section>
+
+          <aside class="panel points-panel" id="points">
+            <div class="panel-heading"><div><h2>积分进度</h2><p>达到要求即可停止提醒</p></div></div>
+            <div class="points-list" id="pointsList"></div>
+            <div class="points-note"><span>i</span><p>多彩未央要求至少 <strong>1 分</strong>，其他板块要求至少 <strong>5 分</strong>。</p></div>
+          </aside>
+        </div>
+
+        <section class="panel settings-panel" id="settings"><div class="settings-copy"><div class="settings-icon"><img class="tinted-icon" id="settingsIcon" alt="" aria-hidden="true" /></div><div><h2>自动监测已开启</h2><p>发现新活动后会在右下角提醒你。你可以调整扫描频率。</p></div></div><div class="settings-control"><label for="intervalSelect">扫描频率</label><select id="intervalSelect"><option value="15">每 15 分钟</option><option value="30" selected>每 30 分钟</option><option value="60">每 1 小时</option></select><span class="chevron"></span></div></section>
+
+        <footer><span>数据来源：<a href="https://weiyang.yuketang.cn/pro/trainingproject/my-score" target="_blank" rel="noreferrer">未央雨课堂个人主页</a></span><span>最后同步 <b id="footerSync">—</b></span><a href="https://weiyang.yuketang.cn/pro/portal/home/" target="_blank" rel="noreferrer">打开原网站 ↗</a></footer>
+      </main>
+    </div>
+
+    <div class="toast" id="toast" role="status"><div class="toast-icon">✦</div><div><strong id="toastTitle">未央主页监测</strong><p id="toastMessage">等待从未央雨课堂个人主页抓取数据</p></div><button id="toastClose" aria-label="关闭">×</button></div>
+
+    <div class="modal-backdrop hidden" id="modalBackdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle"><button class="modal-close" id="modalClose" aria-label="关闭报名窗口">×</button><div class="modal-kicker">活动报名</div><h2 id="modalTitle">报名活动</h2><p class="modal-desc" id="modalDesc"></p><div class="modal-info"><div><span>所属板块</span><strong id="modalSection"></strong></div><div><span>可获得积分</span><strong id="modalPoints"></strong></div></div><button class="primary-button modal-submit" id="modalSubmit">打开活动页面 <span>→</span></button><p class="modal-hint">报名信息和表单由未央雨课堂活动页面提供</p></section></div>
+
+    <!-- 位图图标的着色滤镜（绵羊、演讲台、放大镜共用）：
+         把图里的蓝色精确映射成所在容器的文字色。
+         R/G/B 三行都只取「源图 alpha」再加常量偏移，于是所有不透明像素
+         都变成同一个指定颜色，透明区域保持透明。
+         偏移量是归一化小数：#6379ea = 99/255, 121/255, 234/255。
+         （这是绵羊最初那版写法；后来试过按亮度当 alpha，用户要求回到这一版。）
+         注意：R/G/B 取常量而不是 currentColor，所以这个滤镜只适配
+         #6379ea 这一族配色（列表图标、放大镜、品牌标都是近似的蓝）。 -->
+    <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+      <filter id="sheepTint" color-interpolation-filters="sRGB">
+        <feColorMatrix type="matrix" values="0 0 0 0 0.388
+                                             0 0 0 0 0.475
+                                             0 0 0 0 0.918
+                                             0 0 0 1 0" />
+      </filter>
+    </svg>
+    <script src="sheep-icon.js"></script>
+    <script src="icon-assets.js"></script>
+    <script>
+      // 位图图标（侧边栏绵羊、自动监测放大镜）都在这里挂 src。
+      // 放在 app.js 之前，是为了让 app.js 一渲染完就已经有 src，避免闪一下空白。
+      (function () {
+        var assets = window.__ICON_ASSETS || {};
+        // 侧边栏 logo：绵羊
+        var sheep = document.getElementById('brandSheep');
+        if (sheep) {
+          var sheepUrl = window.__SHEEP_ICON_URL || assets.sheep;
+          if (sheepUrl) {
+            sheep.src = sheepUrl;
+            sheep.style.filter = 'url(#sheepTint)'; // 映射成品牌蓝那一系
+          } else {
+            sheep.remove(); // 位图没加载出来就干脆不显示，别留个破图
+          }
+        }
+        // 自动监测：放大镜
+        var mag = document.getElementById('settingsIcon');
+        if (mag) {
+          if (assets.magnifier) {
+            mag.src = assets.magnifier;
+            mag.style.filter = 'url(#sheepTint)';
+          } else {
+            mag.remove();
+          }
+        }
+        // 侧边栏「监测设置」那项也用同一张放大镜
+        var navMag = document.getElementById('navSettingsIcon');
+        if (navMag) {
+          if (assets.magnifier) {
+            navMag.src = assets.magnifier;
+            navMag.style.filter = 'url(#sheepTint)';
+          } else {
+            navMag.remove(); // 兜底：宁可没有图标，也别显示破图
+          }
+        }
+      })();
+    </script>
+    <script src="app.js"></script>
+    <script>
+      // 侧边栏导航：三个链接对应下面三个区块。
+      // 之前 .active 是写死在「活动总览」上的，点另外两个既不高亮也几乎不滚动，
+      // 看起来就像那两个是禁用的。这里把高亮做成跟着实际位置走。
+      // 用 IntersectionObserver 而不是监听 scroll：
+      // 不用自己算阈值、也不怕滚动容器换成别的元素。
+      (function () {
+        var links = [].slice.call(document.querySelectorAll('.side-nav a[href^="#"]'));
+        if (!links.length || !('IntersectionObserver' in window)) return;
+
+        // href="#overview" -> id="overview"
+        var pairs = links.map(function (a) {
+          return { link: a, section: document.getElementById(a.getAttribute('href').slice(1)) };
+        }).filter(function (p) { return p.section; });
+        if (!pairs.length) return;
+
+        // 以「视口上部 1/3」当判定线：某个区块越过这条线，就算当前区块。
+        // 比整块可见才激活更跟手，点完不用等滚动完全停住。
+        var LINE = Math.max(120, Math.round(window.innerHeight / 3));
+        var observer = new IntersectionObserver(function (entries) {
+          entries.forEach(function (entry) {
+            if (!entry.isIntersecting) return;
+            var hit = pairs.filter(function (p) { return p.section === entry.target; })[0];
+            if (!hit) return;
+            links.forEach(function (a) { a.classList.remove('active'); });
+            hit.link.classList.add('active');
+          });
+        }, { rootMargin: '-' + LINE + 'px 0px 0px 0px', threshold: 0 });
+
+        pairs.forEach(function (p) { observer.observe(p.section); });
+
+        // 点击时立刻切高亮（不等 observer 回调），并做平滑滚动。
+        // 同时用 replaceState 清掉地址栏里的 #fragment：
+        // 留着的话刷新页面会跳回那个区块，而且会触发浏览器的原生跳转、和这里的滚动打架。
+        links.forEach(function (a) {
+          a.addEventListener('click', function (event) {
+            var id = a.getAttribute('href').slice(1);
+            var target = document.getElementById(id);
+            if (!target) return;
+            event.preventDefault();
+            links.forEach(function (x) { x.classList.remove('active'); });
+            a.classList.add('active');
+            target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            if (window.history && history.replaceState) history.replaceState(null, '', location.pathname + location.search);
+          });
+        });
+      })();
+    </script>
+  </body>
+</html>

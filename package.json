@@ -1,0 +1,16 @@
+{
+  "name": "weiyang-monitor",
+  "version": "1.0.0",
+  "private": true,
+  "description": "未央雨课堂活动积分监测后台",
+  "scripts": {
+    "start": "node server.js",
+    "start-edge": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\start-edge-monitor.ps1",
+    "start-chrome": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\start-edge-monitor.ps1 -Browser Chrome",
+    "login": "node server.js --login",
+    "install-browser": "playwright install chromium"
+  },
+  "dependencies": {
+    "playwright": "^1.52.0"
+  }
+}
