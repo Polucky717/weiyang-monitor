@@ -10,10 +10,14 @@
 //   'luminance' —— 按亮度：白/浅灰 -> 透明，越深越不透明。
 //                  适合纯线条图标（演讲台、放大镜），描边和抗锯齿边缘都保留。
 //
-// 用法：node build-icon-assets.js
+// 用法：node tools/build-icon-assets.js
 const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
+
+// 本脚本在 tools/ 下，但图标资源和生成物都在项目根，所以基准目录要上退一级。
+// 注意：这行必须在 require('path') 之后，否则会报 "Cannot access 'path' before initialization"。
+const ROOT = path.join(__dirname, '..');
 
 const SHOTS = 'C:\\Users\\W\\Pictures\\Screenshots\\';
 
@@ -147,7 +151,7 @@ const HEADER = [
       r.squared ? ' 补正方形: ' + r.squared + 'x' + r.squared : '',
       ' 不透明像素:', r.opaque);
 
-    const outPng = path.join(__dirname, 'assets', key + '.png');
+    const outPng = path.join(ROOT, 'assets', key + '.png');
     fs.mkdirSync(path.dirname(outPng), { recursive: true });
     const outBuf = Buffer.from(r.dataUrl.split(',')[1], 'base64');
     fs.writeFileSync(outPng, outBuf);
@@ -166,7 +170,7 @@ const HEADER = [
     lines.push('  ' + k + ": '" + v + "',");
   }
   lines.push('};');
-  fs.writeFileSync(path.join(__dirname, 'icon-assets.js'), lines.join('\n') + '\n', 'utf8');
+  fs.writeFileSync(path.join(ROOT, 'icon-assets.js'), lines.join('\n') + '\n', 'utf8');
   console.log('');
   console.log('已写出 icon-assets.js:', (fs.statSync('icon-assets.js').size / 1024).toFixed(1) + ' KB',
     ' 含图标:', Object.keys(results).join(', '));
@@ -180,7 +184,7 @@ const HEADER = [
       '// 重新生成请跑 build-icon-assets.js sheep。',
       'window.__SHEEP_ICON_URL = '
     ].join('\n');
-    fs.writeFileSync(path.join(__dirname, 'sheep-icon.js'), sheepHeader + "'" + results.sheep + "';\n", 'utf8');
+    fs.writeFileSync(path.join(ROOT, 'sheep-icon.js'), sheepHeader + "'" + results.sheep + "';\n", 'utf8');
     console.log('已写出 sheep-icon.js:', (fs.statSync('sheep-icon.js').size / 1024).toFixed(1) + ' KB');
   }
 })().catch((e) => { console.error('DIAG ERROR:', e.message); process.exit(1); });

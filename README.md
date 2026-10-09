@@ -72,6 +72,48 @@ powershell -ExecutionPolicy Bypass -File .\install-startup.ps1
 
 活动报名页实际提供了活动名称、开班时间、人数、分类标签、简介和报名状态。积分只有在活动卡片或简介中明确出现时才会显示；页面没有提供的字段保持为空，不会推测或补造。
 
+## 目录结构
+
+```
+根目录            运行所需的全部文件（见下方说明，不能随意移动）
+assets/           图标位图资源
+tools/            构建与校验脚本（可选，不参与运行）
+```
+
+**根目录为什么这么平**：`run-monitor.cmd`、`*.ps1`、`*.vbs`、`server.js` 之间全靠「自身所在目录」互相定位（`$PSScriptRoot`、`%~dp0`、`WScript.ScriptFullName`、`path.join(ROOT, ...)`）。把它们放进子目录会让这些引用全部失效，所以运行相关文件都必须留在根目录同一层。
+
+| 根目录内容 | 作用 |
+| --- | --- |
+| `index.html`、`app.js`、`styles.css`、`icon-assets.js`、`sheep-icon.js` | 本地面板（`icon-assets.js` 里内嵌了图标位图） |
+| `server.js` | 后台：抓取、定时扫描、状态接口、桌面通知 |
+| `run-monitor.cmd`、`run-monitor.ps1` | 一键启动（依赖检查、启动 Chromium、登录、起后台） |
+| `start-edge-monitor.ps1`、`launch-*.vbs` | 复用已登录的 Edge / Chrome 会话并以调试模式启动 |
+| `install-startup.ps1`、`setup-desktop.vbs`、`log-startup-event.ps1`、`wrap-npm-start.ps1` | 开机自启及其日志 |
+| `windows-notify.ps1`、`windows-notify.vbs`、`windows-dialog.vbs` | Windows 桌面通知 |
+| `test-live-notification.ps1`、`test-desktop-notification.vbs` | 通知自检 |
+| `monitor.config.example.json` | 选择器配置模板（复制为 `monitor.config.json` 后修改，该文件不会被提交） |
+
+### tools/ 里的脚本
+
+这些都不参与运行，只在你需要重新生成资源或发布时用。**都在项目根目录下执行**：
+
+```powershell
+node .\tools\build-icon-assets.js          # 由原始线稿重新生成图标资源
+node .\tools\build-release-zip.js          # 打出发布用的 weiyang-monitor-github.zip
+node .\tools\check-icons.js                # 核对图标渲染（尺寸、着色、是否残留破图）
+```
+
+`build-icon-assets.js` 从手绘的蓝色线稿生成图标：裁掉四周留白 → 白底转透明 → 缩到 128px → 内嵌成 data URL 写入 `icon-assets.js`，中间产物存到 `assets/`。要换图就改脚本顶部的 `ICONS` 表。抠图有两种模式：`chroma`（按色度，适合内部有白色填充的插画）和 `luminance`（按亮度，适合纯线条图标）。
+
+图标着色由 `index.html` 里的 `#sheepTint` 滤镜完成，它把图里的蓝色映射成界面配色。注意该滤镜的输出色是**常量而非 `currentColor`**，所以位图图标跟不上高亮状态变色——需要跟随状态变色时（例如侧边栏当前项）要用矢量图标。
+
+`tools/publish-to-github.js` 用 GitHub API 把源码推成一次提交并把 zip 挂到 Release 上，token 从环境变量读：
+
+```powershell
+$env:GH_TOKEN = '<你的 token>'
+node .\tools\publish-to-github.js Polucky717/weiyang-monitor v1.0.0
+```
+
 
 ## 复用已经登录的 Edge
 

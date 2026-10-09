@@ -8,7 +8,8 @@ const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
 
-const ROOT = __dirname;
+// 本脚本在 tools/ 下，打包目标是项目根，所以基准目录要上退一级。
+const ROOT = path.join(__dirname, '..');
 const INNER = 'weiyangchengzhang-monitor';   // zip 内的顶层目录名（与旧包一致）
 // 默认输出名；可用命令行第一个参数覆盖（例如先出到临时名再替换，避免覆盖被占用）
 const OUT = path.join(ROOT, process.argv[2] || 'weiyang-monitor-github.zip');
@@ -20,9 +21,9 @@ const FILES = [
   'assets/lectern.png',
   'assets/magnifier.png',
   'assets/sheep.png',
-  'build-icon-assets.js',
-  'build-release-zip.js',
-  'check-icons.js',
+  'tools/build-icon-assets.js',
+  'tools/build-release-zip.js',
+  'tools/check-icons.js',
   'icon-assets.js',
   'index.html',
   'install-startup.ps1',
