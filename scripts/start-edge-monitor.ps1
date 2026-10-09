@@ -156,6 +156,10 @@ if ($LoginOnly) { exit 0 }
 
 $env:WEIYANG_CDP_URL = "http://127.0.0.1:$Port"
 Write-Host "Connected to $Browser, starting the monitor backend: http://127.0.0.1:8787/" -ForegroundColor Green
+# 本脚本在 scripts/ 下，项目根是上一级（package.json / node_modules 都在那边）。
+# npm.cmd 必须在项目根执行，否则找不到 package.json。
+$ProjectRoot = Split-Path -Parent $PSScriptRoot
+
 $npm = (Get-Command npm.cmd -ErrorAction SilentlyContinue).Source
 if (-not $npm) { throw 'npm.cmd was not found.' }
 # Auto-start uses -NoDashboard: run the background monitor only, open no web page.
@@ -178,7 +182,7 @@ if ($backendReady) {
 Write-StartupEvent -Event 'backend-starting' -Detail 'url=http://127.0.0.1:8787'
 $wrapper = Join-Path $PSScriptRoot 'wrap-npm-start.ps1'
 if (Test-Path -LiteralPath $wrapper) {
-  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $wrapper -RootDirectory $PSScriptRoot
+  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $wrapper -RootDirectory $ProjectRoot
   exit $LASTEXITCODE
 }
 & $npm start

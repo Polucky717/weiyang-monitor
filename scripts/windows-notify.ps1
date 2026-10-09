@@ -12,7 +12,9 @@
 # 因此每次运行都留下“走到哪一步 / 抛了什么异常”的记录。
 $tracePath = $TraceLog
 if ([string]::IsNullOrWhiteSpace($tracePath)) {
-  $tracePath = Join-Path $PSScriptRoot 'logs\notify-trace.log'
+  # 本脚本在 scripts/ 下，而 logs/ 在项目根，所以要上退一级。
+  $ProjectRoot = Split-Path -Parent $PSScriptRoot
+  $tracePath = Join-Path $ProjectRoot 'logs\notify-trace.log'
 }
 function Write-Trace([string]$message) {
   try {

@@ -4,10 +4,10 @@
   "private": true,
   "description": "未央雨课堂活动积分监测后台",
   "scripts": {
-    "start": "node server.js",
-    "start-edge": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\start-edge-monitor.ps1",
-    "start-chrome": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\start-edge-monitor.ps1 -Browser Chrome",
-    "login": "node server.js --login",
+    "start": "node src/server.js",
+    "start-edge": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/start-edge-monitor.ps1",
+    "start-chrome": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/start-edge-monitor.ps1 -Browser Chrome",
+    "login": "node src/server.js --login",
     "install-browser": "playwright install chromium"
   },
   "dependencies": {

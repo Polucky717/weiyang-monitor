@@ -289,7 +289,12 @@ $('#toastClose').addEventListener('click', () => $('#toast').classList.remove('s
 $('#notificationBell').addEventListener('click', () => showToast(remoteConnected ? '待关注活动' : '未连接主页', remoteConnected ? `当前有 ${$('#attentionCount').textContent} 个活动正在报名中` : '暂无从未央雨课堂主页抓取的数据'));
 $('#pauseButton').addEventListener('click', (event) => {
   monitorPaused = !monitorPaused;
-  event.currentTarget.textContent = monitorPaused ? '恢复监测' : '暂停监测';
+  // 只改文案与图标，不能用 textContent（会把里面的 svg 图标一起清掉）
+  $('#pauseLabel').textContent = monitorPaused ? '恢复监测' : '暂停监测';
+  event.currentTarget.classList.toggle('is-paused', monitorPaused);
+  $('#pauseGlyph').innerHTML = monitorPaused
+    ? '<path d="M5.2 3.4 12 8l-6.8 4.6Z"></path>'
+    : '<rect x="4.5" y="3" width="2.3" height="10" rx="1.15"></rect><rect x="9.2" y="3" width="2.3" height="10" rx="1.15"></rect>';
   document.querySelector('.live-pulse').style.background = monitorPaused ? '#f0aa58' : '#4bce8c';
   document.querySelector('.status-main strong').textContent = monitorPaused ? '已暂停' : '正在监测';
 });

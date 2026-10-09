@@ -8,19 +8,19 @@
 推荐直接运行一键脚本：双击 `run-monitor.cmd`，或者在 PowerShell 中执行：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\run-monitor.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\run-monitor.ps1
 ```
 
 脚本会自动完成依赖检查、Playwright Chromium 安装、首次登录和后台启动。已经登录过的情况下会直接复用会话；需要切换账号时执行：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\run-monitor.ps1 -Relogin
+powershell -ExecutionPolicy Bypass -File .\scripts\run-monitor.ps1 -Relogin
 ```
 
 首次启动时可以同时配置开机自启：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\run-monitor.ps1 -InstallStartup
+powershell -ExecutionPolicy Bypass -File .\scripts\run-monitor.ps1 -InstallStartup
 ```
 
 也可以手动执行下面的完整流程：
@@ -58,12 +58,12 @@ Chrome/Edge 的 CDP 后台适配连接系统中已安装的浏览器，此路径
 
 ## Windows 开机自启
 
-如果不想手动打开 PowerShell，双击项目目录中的 `setup-desktop.vbs` 一次。它只会加入当前用户的开机启动，不创建桌面快捷方式；开机后使用无头 Edge 在后台监测，不打开雨课堂网站、监测网页或 PowerShell 窗口。Windows 桌面通知仍会按设置弹出。
+如果不想手动打开 PowerShell，双击 `launchers\setup-desktop.vbs` 一次。它只会加入当前用户的开机启动，不创建桌面快捷方式；开机后使用无头 Edge 在后台监测，不打开雨课堂网站、监测网页或 PowerShell 窗口。Windows 桌面通知仍会按设置弹出。
 
 后台运行稳定后执行一次：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\install-startup.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\install-startup.ps1
 ```
 
 这会在当前用户的启动目录创建后台启动项，不需要管理员权限。开机时通过隐藏启动器运行无头 Edge 和监测后台，不打开 Windows Terminal、PowerShell 窗口、雨课堂网站或监测网页。浏览器会优先复用 `%LOCALAPPDATA%\WeiyangMonitor\browser-profile` 会话目录；如果系统限制该目录，会自动回退到临时目录。
@@ -75,23 +75,39 @@ powershell -ExecutionPolicy Bypass -File .\install-startup.ps1
 ## 目录结构
 
 ```
-根目录            运行所需的全部文件（见下方说明，不能随意移动）
-assets/           图标位图资源
-tools/            构建与校验脚本（可选，不参与运行）
+根目录         入口：run-monitor.cmd、README.md、package.json，以及面板静态文件
+  src/         后台本体（server.js）
+  scripts/     运行脚本（PowerShell / cmd）
+  launchers/   Windows 启动器（vbs，双击 / 开机自启走这里）
+  assets/      图标位图资源
+  tools/       构建与校验脚本（不参与运行）
 ```
 
-**根目录为什么这么平**：`run-monitor.cmd`、`*.ps1`、`*.vbs`、`server.js` 之间全靠「自身所在目录」互相定位（`$PSScriptRoot`、`%~dp0`、`WScript.ScriptFullName`、`path.join(ROOT, ...)`）。把它们放进子目录会让这些引用全部失效，所以运行相关文件都必须留在根目录同一层。
+**入口就一个**：双击根目录的 `run-monitor.cmd`，或执行 `npm start`。其余目录都不用管。
 
-| 根目录内容 | 作用 |
-| --- | --- |
-| `index.html`、`app.js`、`styles.css`、`icon-assets.js`、`sheep-icon.js` | 本地面板（`icon-assets.js` 里内嵌了图标位图） |
-| `server.js` | 后台：抓取、定时扫描、状态接口、桌面通知 |
-| `run-monitor.cmd`、`run-monitor.ps1` | 一键启动（依赖检查、启动 Chromium、登录、起后台） |
-| `start-edge-monitor.ps1`、`launch-*.vbs` | 复用已登录的 Edge / Chrome 会话并以调试模式启动 |
-| `install-startup.ps1`、`setup-desktop.vbs`、`log-startup-event.ps1`、`wrap-npm-start.ps1` | 开机自启及其日志 |
-| `windows-notify.ps1`、`windows-notify.vbs`、`windows-dialog.vbs` | Windows 桌面通知 |
-| `test-live-notification.ps1`、`test-desktop-notification.vbs` | 通知自检 |
-| `monitor.config.example.json` | 选择器配置模板（复制为 `monitor.config.json` 后修改，该文件不会被提交） |
+脚本之间靠「自身所在目录」互相定位（`$PSScriptRoot`、`WScript.ScriptFullName`、`path.join(ROOT, ...)`），所以移动目录时每一处引用都要同步改基准——各脚本里凡是跨目录引用都写了注释说明。
+
+<details>
+<summary><b>每个文件做什么（点开）</b></summary>
+
+| 位置 | 内容 | 作用 |
+| --- | --- | --- |
+| 根目录 | `index.html`、`app.js`、`styles.css`、`icon-assets.js`、`sheep-icon.js` | 本地面板（`icon-assets.js` 内嵌了图标位图）。这几个必须同级，由后台按静态文件直接提供 |
+| 根目录 | `run-monitor.cmd` | 一键启动入口 |
+| 根目录 | `monitor.config.example.json` | 选择器配置模板（复制为 `monitor.config.json` 后修改，该文件不会被提交） |
+| `src/` | `server.js` | 后台：抓取、定时扫描、状态接口、桌面通知。它的 `ROOT` 指向项目根，因为配置、登录态、`logs/` 都在那边 |
+| `scripts/` | `run-monitor.ps1`、`run-connected-monitor.ps1`、`start-monitor.ps1` | 启动与依赖检查（会在项目根执行 `npm start`） |
+| `scripts/` | `start-edge-monitor.ps1`、`wrap-npm-start.ps1` | 以调试模式启动 Edge/Chrome，并把 `npm start` 的输出记入 `logs/server.log` |
+| `scripts/` | `install-startup.ps1`、`log-startup-event.ps1` | 开机自启的注册与审计日志（`startup.log` 在项目根） |
+| `scripts/` | `windows-notify.ps1` | Windows 桌面提醒窗口（轨迹日志在 `logs/notify-trace.log`） |
+| `scripts/` | `test-live-notification.ps1` | 通知自检 |
+| `launchers/` | `launch-monitor.vbs` | 双击启动 / 开机自启的入口（隐藏窗口调用 `scripts/start-edge-monitor.ps1`） |
+| `launchers/` | `launch-monitor-ui.vbs`、`launch-chrome-*.vbs` | 带界面启动、Chrome 版本的启动器 |
+| `launchers/` | `setup-desktop.vbs`、`setup-chrome-startup.vbs` | 创建桌面 / 启动文件夹快捷方式 |
+| `launchers/` | `windows-notify.vbs`、`windows-dialog.vbs` | 通知窗口的历史入口，当前无代码调用（保留兼容） |
+| `launchers/` | `test-desktop-notification.vbs` | 通知自检（双击即用） |
+
+**编码注意**：`launchers/` 下的 `.vbs` 含中文的必须是 **UTF-16LE + BOM**。实测 WSH 只认这一种——UTF-8（带不带 BOM 都）会直接解析失败。`launch-monitor.vbs` 是纯 ASCII 文件，中文用 `ChrW()` 转义承载，这样不依赖代码页。
 
 ### tools/ 里的脚本
 
@@ -114,13 +130,15 @@ $env:GH_TOKEN = '<你的 token>'
 node .\tools\publish-to-github.js Polucky717/weiyang-monitor v1.0.0
 ```
 
+</details>
+
 
 ## 复用已经登录的 Edge
 
 如果你已经在 Edge 中登录了未央雨课堂，使用下面的方式让监测器复用该登录态：
 
 1. 保存工作并完全退出所有 Edge 窗口。
-2. 在项目目录执行 `powershell -ExecutionPolicy Bypass -File .\start-edge-monitor.ps1`。脚本会优先复制 `Profile 1`；如果你的登录账号在其他配置中，可加参数，例如 `-ProfileDirectory Default`。
+2. 在项目目录执行 `powershell -ExecutionPolicy Bypass -File .\scripts\start-edge-monitor.ps1`。脚本会优先复制 `Profile 1`；如果你的登录账号在其他配置中，可加参数，例如 `-ProfileDirectory Default`。
 3. 脚本把配置复制到监测器专用目录（原 Edge 配置保持不变），再以远程调试模式启动 Edge 和监测后台。
 
 这个流程不会读取或保存密码，只复制 Edge 已保存的登录态。首次复制后，新实例中的后续登录状态会保存在监测器专用目录。如果你刚在原 Edge 重新登录，需要用 `-RefreshProfile` 更新副本。脚本连接的是 `https://weiyang.yuketang.cn/pro/portal/home/`，不会从其他页面补造数据。
@@ -130,7 +148,7 @@ node .\tools\publish-to-github.js Polucky717/weiyang-monitor v1.0.0
 如果 Edge 调试实例已经启动，只需要重启后台代码即可：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\run-connected-monitor.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\run-connected-monitor.ps1
 ```
 
 ## 使用 Chrome
@@ -138,7 +156,7 @@ powershell -ExecutionPolicy Bypass -File .\run-connected-monitor.ps1
 Chrome 适配与 Edge 使用同一套监测后台，但登录会话保存在独立的 Chrome 监测配置中。首次设置时：
 
 1. 安装 Google Chrome，并完全退出所有 Chrome 窗口。
-2. 双击 `launch-chrome-login.vbs`。Chrome 会打开未央雨课堂，完成登录后关闭该 Chrome 窗口。
-3. 双击 `launch-chrome-monitor.vbs` 启动 Chrome 无头后台监测；它不会打开雨课堂页面或本地监测网页，也不会显示 PowerShell 窗口。
+2. 双击 `launchers\launch-chrome-login.vbs`。Chrome 会打开未央雨课堂，完成登录后关闭该 Chrome 窗口。
+3. 双击 `launchers\launch-chrome-monitor.vbs` 启动 Chrome 无头后台监测；它不会打开雨课堂页面或本地监测网页，也不会显示 PowerShell 窗口。
 
-Chrome 默认使用调试端口 `9223`，登录配置保存在 `%LOCALAPPDATA%\WeiyangMonitor\ChromeDebugData`。Edge 继续使用 `9222` 和自己的配置。需要改回 Edge 时，使用 `launch-monitor.vbs`。如果 Chrome 会话过期，再运行 `launch-chrome-login.vbs` 登录。
+Chrome 默认使用调试端口 `9223`，登录配置保存在 `%LOCALAPPDATA%\WeiyangMonitor\ChromeDebugData`。Edge 继续使用 `9222` 和自己的配置。需要改回 Edge 时，使用 `launchers\launch-monitor.vbs`。如果 Chrome 会话过期，再运行 `launchers\launch-chrome-login.vbs` 登录。

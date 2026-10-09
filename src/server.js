@@ -5,7 +5,9 @@ const os = require('node:os');
 const readline = require('node:readline');
 const { spawn } = require('node:child_process');
 
-const ROOT = __dirname;
+// server.js 在 src/ 下，而配置、登录态、logs/ 和静态文件都在项目根，
+// 所以基准目录要显式上退一级（不能再用 __dirname）。
+const ROOT = path.join(__dirname, '..');
 const CONFIG_PATH = path.join(ROOT, 'monitor.config.json');
 const STATE_PATH = path.join(ROOT, '.weiyang-state.json');
 const HOME_URL = 'https://weiyang.yuketang.cn/pro/portal/home/';
@@ -136,7 +138,7 @@ function isActivityRegistered(item) {
 }
 
 function notifyWindows(title, message, durationSeconds = 60, activityUrl = '', activityTitle = '') {
-  const script = path.join(ROOT, 'windows-notify.ps1');
+  const script = path.join(ROOT, 'scripts', 'windows-notify.ps1');
   if (!fs.existsSync(script)) return Promise.resolve({ ok: false, error: '找不到 Windows 通知脚本。' });
   if (process.env.WEIYANG_DISABLE_WINDOWS_NOTIFY === '1') return Promise.resolve({ ok: false, error: 'Windows 通知已通过配置关闭。' });
   const powershell = path.join(process.env.WINDIR || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
@@ -275,7 +277,7 @@ async function ensureBrowserReachable(cdpUrl) {
     const response = await fetch(`${cdpUrl}/json/version`, { signal: AbortSignal.timeout(3000) });
     if (response.ok) return true;
   } catch { }
-  const launcher = path.join(ROOT, 'start-edge-monitor.ps1');
+  const launcher = path.join(ROOT, 'scripts', 'start-edge-monitor.ps1');
   if (!fs.existsSync(launcher)) return false;
   const powershell = path.join(process.env.WINDIR || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   console.warn('监测器 Edge 已退出，正在自动重新启动（后台无头模式）…');

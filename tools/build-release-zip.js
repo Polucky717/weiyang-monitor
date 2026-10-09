@@ -16,42 +16,55 @@ const OUT = path.join(ROOT, process.argv[2] || 'weiyang-monitor-github.zip');
 
 // 要打包的文件（相对项目根，正斜杠）。运行时产物、登录态、备份、日志一律排除。
 const FILES = [
+  // 根目录入口（保持平铺：用户从这里双击 / 执行 npm）
   '.gitignore',
+  'README.md',
+  'package.json',
+  'package-lock.json',
+  'run-monitor.cmd',
+  'scripts/run-monitor.cmd',
+  'monitor.config.example.json',
+
+  // 面板静态文件（须与 index.html 同级）
+  'index.html',
   'app.js',
+  'styles.css',
+  'icon-assets.js',
+  'sheep-icon.js',
+
+  // 后台
+  'src/server.js',
+
+  // 图标资源与构建工具
   'assets/lectern.png',
   'assets/magnifier.png',
   'assets/sheep.png',
   'tools/build-icon-assets.js',
   'tools/build-release-zip.js',
   'tools/check-icons.js',
-  'icon-assets.js',
-  'index.html',
-  'install-startup.ps1',
-  'launch-chrome-login.vbs',
-  'launch-chrome-monitor.vbs',
-  'launch-monitor-ui.vbs',
-  'launch-monitor.vbs',
-  'log-startup-event.ps1',
-  'monitor.config.example.json',
-  'package-lock.json',
-  'package.json',
-  'README.md',
-  'run-connected-monitor.ps1',
-  'run-monitor.cmd',
-  'run-monitor.ps1',
-  'server.js',
-  'setup-chrome-startup.vbs',
-  'setup-desktop.vbs',
-  'sheep-icon.js',
-  'start-edge-monitor.ps1',
-  'start-monitor.ps1',
-  'styles.css',
-  'test-desktop-notification.vbs',
-  'test-live-notification.ps1',
-  'windows-dialog.vbs',
-  'windows-notify.ps1',
-  'windows-notify.vbs',
-  'wrap-npm-start.ps1'
+  'tools/publish-to-github.js',
+
+  // 运行脚本（PowerShell / cmd）
+  'scripts/install-startup.ps1',
+  'scripts/log-startup-event.ps1',
+  'scripts/run-connected-monitor.ps1',
+  'scripts/run-monitor.ps1',
+  'scripts/start-edge-monitor.ps1',
+  'scripts/start-monitor.ps1',
+  'scripts/test-live-notification.ps1',
+  'scripts/windows-notify.ps1',
+  'scripts/wrap-npm-start.ps1',
+
+  // Windows 启动器（vbs）
+  'launchers/launch-chrome-login.vbs',
+  'launchers/launch-chrome-monitor.vbs',
+  'launchers/launch-monitor-ui.vbs',
+  'launchers/launch-monitor.vbs',
+  'launchers/setup-chrome-startup.vbs',
+  'launchers/setup-desktop.vbs',
+  'launchers/test-desktop-notification.vbs',
+  'launchers/windows-dialog.vbs',
+  'launchers/windows-notify.vbs'
 ];
 
 // —— 极简 zip 写入器（store / deflate），只为完全控制条目名 ——

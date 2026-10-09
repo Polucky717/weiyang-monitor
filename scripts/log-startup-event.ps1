@@ -31,7 +31,9 @@ $ErrorActionPreference = 'SilentlyContinue'
 
 try {
   if (-not $LogPath) {
-    $LogPath = Join-Path $PSScriptRoot 'startup.log'
+    # 本脚本在 scripts/ 下，而 startup.log 在项目根（见文件头说明），所以要上退一级。
+    $ProjectRoot = Split-Path -Parent $PSScriptRoot
+    $LogPath = Join-Path $ProjectRoot 'startup.log'
   }
 
   $stamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'

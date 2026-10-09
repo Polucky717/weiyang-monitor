@@ -1,6 +1,7 @@
 ﻿param([int]$Port = 9222)
 $ErrorActionPreference = 'Stop'
-Set-Location -LiteralPath $PSScriptRoot
+$ProjectRoot = Split-Path -Parent $PSScriptRoot
+Set-Location -LiteralPath $ProjectRoot
 $version = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/json/version" -TimeoutSec 3
 if (-not $version.webSocketDebuggerUrl) { throw "Edge 调试端口 $Port 不可用。请先运行 start-edge-monitor.ps1。" }
 $env:WEIYANG_CDP_URL = "http://127.0.0.1:$Port"
