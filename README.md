@@ -64,17 +64,7 @@ Chrome/Edge 的 CDP 后台适配连接系统中已安装的浏览器，此路径
 node tools\install-autostart.js
 ```
 
-这会在当前用户的启动目录创建一个快捷方式 `未央观察站.lnk`，不需要管理员权限。**快捷方式的目标是 `wscript.exe`，参数是项目根目录里的 `start-autostart.vbs`，工作目录设为项目根。** 开机后使用无头浏览器在后台监测，**不打开**雨课堂网站、监测网页，也**不会出现任何窗口**（包括黑框）；Windows 桌面通知仍会按设置弹出。
-
-**目标为什么是 `wscript.exe` 而不是批处理本身**：如果快捷方式直接指向 `.cmd`，Windows 会为它开一个控制台窗口（标题取自快捷方式名，也就是一个名叫"未央观察站"的黑框）；而且用 `start /b` 起的后台挂在这个控制台上，**用户一关窗口就把后台一起杀掉了**（实测：关窗后 8787 立即变成 DOWN，`logs\server.log` 停止增长）。`wscript.exe` 是 GUI 宿主，不创建控制台，所以既没有窗口可关，后台也不会被带走。
-
-三个文件的分工：
-
-| 文件 | 角色 |
-| --- | --- |
-| 快捷方式 `未央观察站.lnk` | 由 Windows 在登录时启动，指向 `wscript.exe` |
-| `start-autostart.vbs` | 用 `WScript.ScriptFullName` 定位自己所在的项目根，再以隐藏方式（window style 0）运行批处理。**不含任何中文**，因为 WSH 按 ANSI 读 `.vbs` |
-| `start-autostart.cmd` | 真正干活儿：探测 8787 是否已在跑、没跑就启动 `src\server.js`、每一步写 `startup.log`。**纯 ASCII**，因为 cmd 按 ANSI 解析 `.cmd` |
+这会在当前用户的启动目录创建快捷方式 `未央观察站.lnk`，不需要管理员权限。开机后在后台监测，**不打开**雨课堂网站、监测网页，也**不会出现任何窗口**；桌面通知仍会按设置弹出。
 
 **关掉开机自启**（同样不需要管理员权限）：
 
@@ -90,11 +80,9 @@ node tools\install-autostart.js --remove
 node tools\install-autostart.js --check
 ```
 
-它会用 Windows 自己的接口读回快捷方式，打印出目标（应为 `wscript.exe`）、参数（隐藏启动器路径）、工作目录，以及这几个路径是否真实存在。
+安装脚本会在安装前检查两个脚本的编码，安装后用 Windows 自己的接口读回快捷方式，打印目标、参数、工作目录以及这几个路径是否真实存在。
 
-### 怎么确认开机自启真的生效了
-
-开机后看项目根目录的 `startup.log`，一次正常的开机应当有这 5 行（时间在同一两秒内）：
+**开机后怎么确认它生效了**：看项目根 `startup.log` 是否新增下面这几行（`000` 表示探测到后台没在跑，于是启动；若已在跑会写 `autostart-backend-reused` 并直接结束，不会重复启动）：
 
 ```
 2026-10-10 02:14:59 | autostart-enter            | file=start-autostart.cmd
@@ -104,38 +92,41 @@ node tools\install-autostart.js --check
 2026-10-10 02:15:01 | autostart-backend-launched | start-errorlevel=0
 ```
 
-- `autostart-enter` 说明启动文件夹的快捷方式被 Windows 执行了，并且它成功找到了项目根。
-- `autostart-probe` 的 `http=` 是后台探测结果：`000` = 后台没在跑（于是往下启动）、`200` = 已在运行（会写 `autostart-backend-reused` 后直接结束，不会重复启动）。
-- **没有 `autostart-enter` 就说明这个批处理没被执行**：写日志用的是 `cmd` 自己的 `echo >>`，不存在"写了但没记录下来"的情况；再加上 `autostart-node` / `autostart-backend-*` 三层递进，任何一步失败都能从最后一条记录定位（脚本还会写 `autostart-ERROR` 并给出原因）。
-- 如果 `vbs-ERROR` 出现在日志里，说明 `.vbs` 找不到批处理（一般是被移动或删掉了）。
-
-**另外请确认开机后没有任何窗口**。如果看到一个名叫"未央观察站"的黑框，说明快捷方式的目标又被指回了 `.cmd`，请重新运行一次 `node tools\install-autostart.js`；并且**不要用关窗口的方式来退出它**——那会把后台一起带走。
-
-### 这个启动器做什么、不做什么
-
-它只保证一件事：**后台在跑**。具体是启动项目根的 `src\server.js`，输出追加到 `logs\server.log`（崩溃会留下证据），并用 `curl.exe` 探测 8787 以免重复启动。监测用的无头浏览器由**后台自己**在需要时启动，不需要启动器操心。
-
-**它不调用 `scripts\start-edge-monitor.ps1`** —— 原因见下面第 4 条坑。那个脚本对**手动**使用仍然可用，只是不能再参与开机自启。
-
-> **开机后 9222 端口是关闭的，这是正常的，不是故障。**
-> 走这条自启路径时，监测浏览器由后台自己用 Playwright 直接拉起，不开放调试端口，所以 `netstat` 里看不到 9222。只有用 `start-edge-monitor.ps1`（外部调试模式，便于手工连上去看页面）时才会有 9222 监听。判断后台是否正常，看 8787 和 `/api/state` 里的 `status` 即可：
+> 判断后台是否正常，看 8787 和 `/api/state` 里的 `status` 即可（**开机后 9222 是关闭的，这是正常的**：监测浏览器由后台自己用 Playwright 拉起，不开放调试端口）：
 >
 > ```powershell
 > curl.exe -s http://127.0.0.1:8787/api/state
 > ```
 
-### 几条踩过的坑（改动前务必先读）
+<details>
+<summary><b>自启是怎么实现的，以及为什么这么绕（点开）</b></summary>
 
-1. **不要把手写的 `.cmd` 直接放进启动文件夹。** 项目路径含中文，而 `cmd.exe` 按 ANSI 代码页解析 `.cmd`：实测 `set "ROOT=D:\工程文件\..."` 会把路径写坏（变量回显成乱码），之后所有 `if exist "%ROOT%..."` 全部失败，表现为双击毫无反应、连日志都没有。`%~dp0` 不受影响（它由 cmd 自己提供，不需要从文件内容解码）。
-2. **启动文件夹的上一级不是项目根。** 它在 `...\Microsoft\Windows\Start Menu\Programs\Startup`，上一级是 `Programs\`，和项目所在的 `D:\` 盘没有父子关系。所以"从启动文件夹上跳一级找项目"这种写法是错的。
-3. **快捷方式必须用 `WScript.Shell` COM 接口创建**，不要手写 `.lnk` 二进制。手写那版虽然能自洽解析，但 Windows 解析不出目标（`WScript.Shell.CreateShortcut` 读回的 `TargetPath` 是空），双击完全没有反应。原因是 `LinkTargetIDList` 的结构细节：根项应当是 "My Computer" 的 CLSID 项（`1f 50` + 16 字节 CLSID），而不是直接从盘符项 `1f 2a` 开始。
-4. **`Get-NetTCPConnection` 在这台机器上需要管理员权限，会报"拒绝访问"。** `scripts\start-edge-monitor.ps1` 用它判断 9222 的占用进程，启动时若监测 Edge 已在监听，这段逻辑就会拿不到进程、进而抛 `Monitor port 9222 is still occupied` 并中止 —— **后台因此永远起不来**。这是实测到的：开机后 `startup.log` 只有 `autostart-enter` / `autostart-launched`，没有 `browser-ready`，`logs\server.log` 也完全没有新增，同时 9222 已经在监听。所以开机自启不能再走那个脚本。
-5. **`.vbs` 启动器里的 PowerShell 日志调用在这台机器上会静默失败。** `launchers\launch-monitor.vbs` 退出码为 0、监测也照常启动，但它调用的 `scripts\log-startup-event.ps1` 不写任何内容，导致 `startup.log` 停止记录、看起来像"自启失效"。这正是自启改为批处理自己写日志的原因。该 `.vbs` 对**手动双击**仍然可用。
-6. 项目内的 `.ps1` 尽量保持纯 ASCII 注释：Windows PowerShell 5.1 会把无 BOM 的 UTF-8 文件按 ANSI 读取，中文注释会变成乱码并可能破坏解析；用 PowerShell 处理本项目里任何含中文的 UTF-8 文件前都要先确认编码，否则会把文件改坏（这一条我亲身踩过）。
-7. **`curl` 的探测结果要按字符串比较。** 后台没在跑时 `curl -w "%%{http_code}"` 输出的是 `000` 而不是空，所以脚本判断的是 `if "%BACKEND_UP%"=="200"`，不能拿"为空"当"没起来"。
-8. **快捷方式不要指向 `.cmd`，否则会弹黑框、并且关窗会杀掉后台。** 详见上面"目标为什么是 wscript.exe"，以及"怎么确认"最后一节。这一条是用户实际遇到的：开机后出现一个名叫"未央观察站"的黑框，关掉之后 8787 就打不开了。
-9. **`.vbs` 必须纯 ASCII。** WSH 按系统 ANSI 代码页读 `.vbs`，注释里放中文会变成乱码；`.cmd` 同理。`start-autostart.vbs` 和 `start-autostart.cmd` 都特意写成纯 ASCII，安装脚本会在安装前检查并告警。
-10. **`WshShell.Run(cmd, 0, False)` 既隐藏又分离。** 第一个参数里的中文路径没问题（VBS 是 UTF-16 字符串，不经代码页），第三个参数 `False`（不等待）才能让后台在启动器退出后继续活着。
+涉及三个文件：
+
+| 文件 | 角色 |
+| --- | --- |
+| 快捷方式 `未央观察站.lnk` | 由 Windows 在登录时启动，目标是 `wscript.exe`，参数是下面的 `.vbs` |
+| `start-autostart.vbs` | 用 `WScript.ScriptFullName` 定位自己所在的项目根，再以隐藏方式运行批处理。**必须留在项目根** |
+| `start-autostart.cmd` | 真正干活儿：探测 8787 是否已在跑、没跑就启动 `src\server.js`、每一步写 `startup.log`。**也必须留在项目根**（靠 `%~dp0` 自定位） |
+
+**目标为什么是 `wscript.exe`，而不是直接指向批处理？** 因为快捷方式指向 `.cmd` 时，Windows 会为它开一个控制台窗口（标题取自快捷方式名，也就是一个名叫"未央观察站"的黑框）；而用 `start /b` 起的后台挂在这个控制台上，**关掉窗口会把后台一起杀掉** —— 实测关窗后 8787 立即变成 DOWN、`logs\server.log` 停止增长。`wscript.exe` 是 GUI 宿主，不创建控制台，所以既没有窗口可关，后台也不会被带走。
+
+启动器只保证一件事：**后台在跑**。输出追加到 `logs\server.log`（崩溃会留下证据）。监测用的无头浏览器由后台自己在需要时启动，启动器不操心，也**不调用** `scripts\start-edge-monitor.ps1`（那个脚本对**手动**使用仍然可用，只是不能再参与开机自启）。
+
+**移动过项目目录后要重新运行一次安装**：快捷方式里存的是绝对路径。
+
+**改动自启相关文件前，先读这一节。** 下面每一条都是实测踩出来的：
+
+1. **`.cmd` 里不要用 `set` 存含中文的路径。** `cmd.exe` 按 ANSI 代码页解析 `.cmd`，实测 `set "ROOT=D:\工程文件\..."` 会把路径写坏（变量回显成乱码），之后所有 `if exist "%ROOT%..."` 全部失败，表现为双击毫无反应、连日志都没有。`%~dp0` 不受影响（由 cmd 自己提供，不需要从文件内容解码）。
+2. **`.cmd` 和 `.vbs` 必须纯 ASCII。** cmd 按 ANSI 解析 `.cmd`，WSH 按 ANSI 读 `.vbs`，中文注释会变乱码并可能破坏解析。安装脚本会在安装前检查并告警。（`.ps1` 同理：Windows PowerShell 5.1 把无 BOM 的 UTF-8 当 ANSI 读。）
+3. **启动文件夹的上一级不是项目根。** 它在 `...\Microsoft\Windows\Start Menu\Programs\Startup`，上一级是 `Programs\`，和项目所在的 `D:\` 盘没有父子关系，所以"从启动文件夹上跳一级找项目"是错的。
+4. **`Get-NetTCPConnection` 在这台机器上需要管理员权限，会报"拒绝访问"。** `scripts\start-edge-monitor.ps1` 用它判断 9222 的占用进程；开机时监测浏览器已在监听，这段拿不到进程就抛 `Monitor port 9222 is still occupied` 并中止，**后台因此永远起不来**。实测特征：`startup.log` 只有 `autostart-enter` / `autostart-launched`，没有 `browser-ready`，`logs\server.log` 完全没有新增，而 9222 已在监听。
+5. **`.vbs` 里的 PowerShell 日志调用在这台机器上会静默失败。** `launchers\launch-monitor.vbs` 退出码为 0、监测也照常启动，但它调用的 `scripts\log-startup-event.ps1` 不写任何内容，导致 `startup.log` 停止记录、看起来像"自启失效"。这正是自启改为批处理自己写日志（`cmd` 的 `echo >>`，不会静默失败）的原因。
+6. **快捷方式必须用 `WScript.Shell` COM 接口创建，不要手写 `.lnk` 二进制。** 手写那版能自洽解析，但 Windows 解析不出目标（读回的 `TargetPath` 是空），双击毫无反应。结构差异在 `LinkTargetIDList`：根项应是 "My Computer" 的 CLSID 项（`1f 50` + 16 字节 CLSID），而不是直接从盘符项 `1f 2a` 开始。
+7. **`curl` 的探测结果要按字符串比较。** 后台没在跑时 `curl -w "%%{http_code}"` 输出的是 `000` 而不是空，所以判断写成 `if "%BACKEND_UP%"=="200"`，不能拿"为空"当"没起来"。
+8. **日志出现 `vbs-ERROR`** 说明 `.vbs` 找不到批处理（一般是被移动或删掉了）；出现 `autostart-ERROR` 会附带具体原因。
+
+</details>
 
 页面不再内置活动、积分或个人信息演示数据。未连接后台或抓取失败时会显示“等待主页数据”。后台会从未央雨课堂的活动报名列表抓取活动卡片，再回到个人主页读取个人信息；所有展示内容均来自未央雨课堂页面。
 
