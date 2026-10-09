@@ -12,7 +12,6 @@ Dim loggerPath, loggerCommand, loggerDetail, launchCommand
 Set shell = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 ' This file lives in launchers/; projectRoot below is the project root.
-' This file lives in launchers/; projectRoot below is the project root.
 root = fso.GetParentFolderName(WScript.ScriptFullName)
 projectRoot = fso.GetParentFolderName(root)
 powershell = shell.ExpandEnvironmentStrings("%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe")

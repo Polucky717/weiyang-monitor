@@ -68,6 +68,16 @@ powershell -ExecutionPolicy Bypass -File .\scripts\install-startup.ps1
 
 这会在当前用户的启动目录创建后台启动项，不需要管理员权限。开机时通过隐藏启动器运行无头 Edge 和监测后台，不打开 Windows Terminal、PowerShell 窗口、雨课堂网站或监测网页。浏览器会优先复用 `%LOCALAPPDATA%\WeiyangMonitor\browser-profile` 会话目录；如果系统限制该目录，会自动回退到临时目录。
 
+**想关掉开机自启**（同样不需要管理员权限）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install-startup.ps1 -Remove
+```
+
+它会删掉启动目录里的 `未央观察站.lnk`（以及旧版遗留的 `未央雨课堂活动提醒.lnk`）。也可以手动删：在文件资源管理器地址栏输入 `shell:startup`，把里面的快捷方式删掉即可。
+
+**移动过项目目录后要重跑一次安装**：快捷方式里存的是启动器的绝对路径，移动目录会让它失效（表现为开机时弹一个"找不到启动器"的提示，且 `startup.log` 不再新增记录）。重跑 `install-startup.ps1` 即可修好。
+
 页面不再内置活动、积分或个人信息演示数据。未连接后台或抓取失败时会显示“等待主页数据”。后台会从未央雨课堂的活动报名列表抓取活动卡片，再回到个人主页读取个人信息；所有展示内容均来自未央雨课堂页面。
 
 活动报名页实际提供了活动名称、开班时间、人数、分类标签、简介和报名状态。积分只有在活动卡片或简介中明确出现时才会显示；页面没有提供的字段保持为空，不会推测或补造。
