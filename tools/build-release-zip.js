@@ -22,6 +22,7 @@ const FILES = [
   'package.json',
   'package-lock.json',
   'run-monitor.cmd',
+  'start-autostart.vbs',
   'start-autostart.cmd',
   'scripts/run-monitor.cmd',
   'monitor.config.example.json',

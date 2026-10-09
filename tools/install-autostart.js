@@ -14,9 +14,17 @@
 //     WScript.Shell COM 接口创建（不是手写二进制 —— 手写过一版，Windows
 //     解析不出目标，双击完全无反应）。
 //
-//  C) .lnk 的目标指向项目根的 start-autostart.cmd，工作目录设为项目根。
-//     该 .cmd 在项目根内部用 %~dp0 定位自己，全程可靠，并负责写
-//     startup.log，所以每一步都有审计痕迹。
+// C) .lnk 的目标是 wscript.exe，参数是项目根的 start-autostart.vbs。
+//
+//     为什么不直接指向 start-autostart.cmd：快捷方式指向 .cmd 时，Windows
+//     会为它开一个控制台窗口（标题取自快捷方式名，用户看到的就是一个名叫
+//     "未央观察站"的黑框）；而用 "start /b" 起的后台挂在这个控制台上，
+//     用户关掉窗口就把后台一起杀掉了 —— 实测确认：关窗后 8787 立即 DOWN，
+//     logs\server.log 停止增长。wscript.exe 是 GUI 宿主，不创建控制台。
+//
+//     .vbs 用 fso.GetParentFolderName(WScript.ScriptFullName) 定位自己，
+//     再以隐藏方式（window style 0）运行 start-autostart.cmd；批处理负责
+//     实际启动后台并写 startup.log，所以每一步都有审计痕迹。
 //
 // 用法:
 //   node tools\install-autostart.js           安装 / 重新安装 / 刷新
@@ -27,11 +35,18 @@ const path = require('path');
 const { execFileSync } = require('child_process');
 
 const ROOT = path.join(__dirname, '..');
-const TARGET_CMD = path.join(ROOT, 'start-autostart.cmd');
+// 快捷方式指向 wscript.exe，参数是隐藏启动器 .vbs。
+//
+// 为什么不直接指向 start-autostart.cmd：那样 Windows 会为这个 .cmd 开一个
+// 控制台窗口（标题取自快捷方式名），用户会看到一个黑框；而且用 "start /b"
+// 起来的后台挂在这个控制台上，用户关掉窗口就把后台一起杀掉了（实测确认：
+// 关窗后 8787 立即 DOWN）。wscript.exe 是 GUI 宿主，根本不创建控制台。
+const TARGET_VBS = path.join(ROOT, 'start-autostart.vbs');
+const WSCRIPT = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'wscript.exe');
 const STARTUP_DIR = path.join(process.env.APPDATA, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup');
 const LNK_NAME = '未央观察站.lnk';
 const LNK_PATH = path.join(STARTUP_DIR, LNK_NAME);
-// 历史上出现过、需要一并清理的自启项
+// 历史上出现过、需要一并清理的自启项（避免重复启动或残留旧行为）
 const LEGACY = ['start-autostart.cmd', '未央雨课堂活动提醒.lnk', 'launch-monitor.vbs'];
 const DESCRIPTION = '后台启动未央观察站，不打开终端或网页';
 
@@ -65,9 +80,12 @@ function createShortcut() {
   const script = [
     '$sh = New-Object -ComObject WScript.Shell',
     '$sc = $sh.CreateShortcut(' + psLiteral(LNK_PATH) + ')',
-    '$sc.TargetPath = ' + psLiteral(TARGET_CMD),
+    '$sc.TargetPath = ' + psLiteral(WSCRIPT),
+    '$sc.Arguments = ' + psLiteral('"' + TARGET_VBS + '"'),
     '$sc.WorkingDirectory = ' + psLiteral(ROOT),
     '$sc.Description = ' + psLiteral(DESCRIPTION),
+    '$sc.IconLocation = ' + psLiteral(WSCRIPT + ',0'),
+    // 7 = 最小化，1 = 正常。目标既然是 wscript（无控制台），这里只是双保险。
     '$sc.WindowStyle = 7',
     '$sc.Save()',
     'Write-Output "SAVED"'
@@ -79,11 +97,17 @@ function readShortcut() {
   const script = [
     '$sh = New-Object -ComObject WScript.Shell;',
     '$sc = $sh.CreateShortcut(' + psLiteral(LNK_PATH) + ');',
+    // 参数形如 "D:\...\start-autostart.vbs"，可能带引号，这里剥掉再做存在性判断
+    '$argPath = $sc.Arguments;',
+    'if ($argPath) { $argPath = $argPath.Trim().Trim([char]34) }',
     '$o = [ordered]@{',
     '  target = $sc.TargetPath;',
+    '  args = $sc.Arguments;',
+    '  argPath = $argPath;',
     '  workdir = $sc.WorkingDirectory;',
     '  desc = $sc.Description;',
     '  targetExists = [bool]($sc.TargetPath -and (Test-Path -LiteralPath $sc.TargetPath));',
+    '  argExists = [bool]($argPath -and (Test-Path -LiteralPath $argPath));',
     '  workdirExists = [bool]($sc.WorkingDirectory -and (Test-Path -LiteralPath $sc.WorkingDirectory));',
     '};',
     '$o | ConvertTo-Json -Compress'
@@ -121,15 +145,17 @@ function checkShortcut() {
       console.log('  Windows 解析结果:');
       console.log('    目标    : ' + info.target);
       console.log('              -> 存在: ' + info.targetExists);
+      console.log('    参数    : ' + info.args);
+      console.log('              -> 隐藏启动器存在: ' + info.argExists);
       console.log('    工作目录: ' + info.workdir);
       console.log('              -> 存在: ' + info.workdirExists);
       console.log('    描述    : ' + info.desc);
     }
   }
   console.log('');
-  console.log('被指向的批处理存在: ' + fs.existsSync(TARGET_CMD));
-  console.log('  ' + TARGET_CMD);
-  console.log('scripts\\start-edge-monitor.ps1 存在: ' + fs.existsSync(path.join(ROOT, 'scripts', 'start-edge-monitor.ps1')));
+  console.log('隐藏启动器 start-autostart.vbs 存在: ' + fs.existsSync(TARGET_VBS));
+  console.log('  ' + TARGET_VBS);
+  console.log('实际干活儿的批处理 start-autostart.cmd 存在: ' + fs.existsSync(path.join(ROOT, 'start-autostart.cmd')));
   console.log('startup.log 存在: ' + fs.existsSync(path.join(ROOT, 'startup.log')));
 }
 
@@ -156,12 +182,22 @@ if (mode === 'remove') {
 // ---- 安装 ----
 console.log('');
 console.log('=== 安装前检查 ===');
-if (!fs.existsSync(TARGET_CMD)) { console.error('找不到 ' + TARGET_CMD); process.exit(1); }
+if (!fs.existsSync(TARGET_VBS)) { console.error('找不到隐藏启动器 ' + TARGET_VBS); process.exit(1); }
+if (!fs.existsSync(path.join(ROOT, 'start-autostart.cmd'))) { console.error('找不到 start-autostart.cmd'); process.exit(1); }
+if (!fs.existsSync(WSCRIPT)) { console.error('找不到 wscript.exe: ' + WSCRIPT); process.exit(1); }
 if (!fs.existsSync(STARTUP_DIR)) { console.error('启动文件夹不存在: ' + STARTUP_DIR); process.exit(1); }
-let nonAscii = 0;
-for (const b of fs.readFileSync(TARGET_CMD)) if (b > 127) nonAscii += 1;
-console.log('  批处理: ' + TARGET_CMD);
-console.log('    大小 ' + fs.statSync(TARGET_CMD).size + ' 字节, 非 ASCII 字节 ' + nonAscii + (nonAscii === 0 ? '  ✓ 纯 ASCII' : '  ✗ 含非 ASCII'));
+
+// 两个脚本都必须能安全运行：cmd 按 ANSI 解析 .cmd，WSH 按 ANSI 读 .vbs，
+// 所以中文注释会让它们坏掉。这里提前把它们照出来。
+for (const rel of ['start-autostart.cmd', 'start-autostart.vbs']) {
+  const p = path.join(ROOT, rel);
+  const bytes = fs.readFileSync(p);
+  let n = 0;
+  for (const b of bytes) if (b > 127) n += 1;
+  console.log('  ' + rel.padEnd(24) + String(bytes.length).padStart(6) + ' 字节, 非 ASCII ' + n
+    + (n === 0 ? '  ✓' : '  ✗ 含非 ASCII，可能被按 ANSI 解析出错'));
+}
+console.log('  wscript.exe: ' + WSCRIPT);
 
 // 清理会重复启动的旧自启项
 for (const f of LEGACY) {
@@ -195,20 +231,27 @@ if (info.unavailable) {
 } else {
   console.log('  目标    : ' + info.target);
   console.log('            -> 存在: ' + info.targetExists);
+  console.log('  参数    : ' + info.args);
+  console.log('            -> 隐藏启动器存在: ' + info.argExists);
   console.log('  工作目录: ' + info.workdir);
   console.log('            -> 存在: ' + info.workdirExists);
   console.log('  描述    : ' + info.desc);
-  const ok = info.targetExists === true && info.workdirExists === true;
+  const ok = info.targetExists === true && info.argExists === true && info.workdirExists === true;
   console.log('');
   console.log('  ' + (ok
-    ? '✓ 快捷方式有效：Windows 解析出目标与工作目录，且两者都存在'
-    : '✗ 快捷方式无效：目标或工作目录不存在'));
+    ? '✓ 快捷方式有效：目标是 wscript.exe，参数是隐藏启动器，工作目录都在'
+    : '✗ 快捷方式无效：目标、参数或工作目录有问题'));
 }
 
 console.log('');
 console.log('=== 安装后的启动文件夹 ===');
 report();
 console.log('');
-console.log('验证（不必重启）：双击启动文件夹里的快捷方式，然后看项目根 startup.log');
-console.log('是否新增 autostart-enter / autostart-launched 两行。');
-console.log('真正的验证是重启一次。关闭自启: node tools\\install-autostart.js --remove');
+console.log('为什么目标是 wscript.exe 而不是批处理：');
+console.log('  直接指向 .cmd 会让 Windows 开一个控制台窗口（你会看到一个黑框），');
+console.log('  而且后台挂在该控制台上，关掉窗口就把后台一起杀掉。');
+console.log('  wscript.exe 是 GUI 宿主，不创建控制台，后台因此不会随窗口消失。');
+console.log('');
+console.log('验证（不必重启）：双击启动文件夹里的快捷方式 —— 不应出现任何窗口，');
+console.log('然后看项目根 startup.log 是否新增 autostart-enter / autostart-backend-* 行。');
+console.log('关闭自启: node tools\\install-autostart.js --remove');
