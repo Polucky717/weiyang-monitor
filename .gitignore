@@ -3,6 +3,16 @@ node_modules/
 .weiyang-login-complete
 .weiyang-state.json
 .weiyang-state.json.tmp
+.weiyang-state.json.bak
+.weiyang-state.json.bak2
 monitor.config.json
 debug.log
+startup.log
+logs/
 tmp-*.png
+tmp-*
+*.zip
+*.zip.new
+*.bak
+*.retired.bak
+未央观察站.lnk

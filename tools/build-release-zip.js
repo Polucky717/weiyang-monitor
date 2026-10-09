@@ -22,6 +22,7 @@ const FILES = [
   'package.json',
   'package-lock.json',
   'run-monitor.cmd',
+  'start-autostart.cmd',
   'scripts/run-monitor.cmd',
   'monitor.config.example.json',
 
@@ -41,7 +42,9 @@ const FILES = [
   'assets/sheep.png',
   'tools/build-icon-assets.js',
   'tools/build-release-zip.js',
+  'tools/check-file-lists.js',
   'tools/check-icons.js',
+  'tools/install-autostart.js',
   'tools/publish-to-github.js',
 
   // 运行脚本（PowerShell / cmd）
