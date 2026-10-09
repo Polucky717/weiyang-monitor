@@ -82,48 +82,6 @@ node tools\install-autostart.js --check
 
 它会用 Windows 自己的接口读回快捷方式，打印出解析到的目标与工作目录、以及这两个路径是否真实存在。
 
-### 怎么确认开机自启真的生效了
-
-开机后看项目根目录的 `startup.log`，一次正常的开机应当有这 5 行（时间在同一两秒内）：
-
-```
-2026-10-10 01:55:57 | autostart-enter            | file=start-autostart.cmd
-2026-10-10 01:55:57 | autostart-node             | exe=C:\Program Files\nodejs\node.exe
-2026-10-10 01:55:59 | autostart-probe            | http=000
-2026-10-10 01:55:59 | autostart-backend-starting | url=http://127.0.0.1:8787
-2026-10-10 01:55:59 | autostart-backend-launched | start-errorlevel=0
-```
-
-- `autostart-enter` 说明启动文件夹的快捷方式被 Windows 执行了，并且它成功找到了项目根。
-- `autostart-probe` 的 `http=` 是后台探测结果：`000` = 后台没在跑（于是往下启动）、`200` = 已在运行（会写 `autostart-backend-reused` 后直接结束，不会重复启动）。
-- **没有 `autostart-enter` 就说明这个批处理没被执行**：写日志用的是 `cmd` 自己的 `echo >>`，不存在"写了但没记录下来"的情况；再加上 `autostart-node` / `autostart-backend-*` 三层递进，任何一步失败都能从最后一条记录定位（脚本还会写 `autostart-ERROR` 并给出原因）。
-
-### 这个启动器做什么、不做什么
-
-它只保证一件事：**后台在跑**。具体是启动项目根的 `src\server.js`，输出追加到 `logs\server.log`（崩溃会留下证据），并用 `curl.exe` 探测 8787 以免重复启动。监测用的无头浏览器由**后台自己**在需要时启动，不需要启动器操心。
-
-**它不调用 `scripts\start-edge-monitor.ps1`** —— 原因见下面第 4 条坑。那个脚本对**手动**使用仍然可用，只是不能再参与开机自启。
-
-> **开机后 9222 端口是关闭的，这是正常的，不是故障。**
-> 走这条自启路径时，监测浏览器由后台自己用 Playwright 直接拉起，不开放调试端口，所以 `netstat` 里看不到 9222。只有用 `start-edge-monitor.ps1`（外部调试模式，便于手工连上去看页面）时才会有 9222 监听。判断后台是否正常，看 8787 和 `/api/state` 里的 `status` 即可：
->
-> ```powershell
-> curl.exe -s http://127.0.0.1:8787/api/state
-> ```
-
-### 几条踩过的坑（改动前务必先读）
-
-1. **不要把手写的 `.cmd` 直接放进启动文件夹。** 项目路径含中文，而 `cmd.exe` 按 ANSI 代码页解析 `.cmd`：实测 `set "ROOT=D:\工程文件\..."` 会把路径写坏（变量回显成乱码），之后所有 `if exist "%ROOT%..."` 全部失败，表现为双击毫无反应、连日志都没有。`%~dp0` 不受影响（它由 cmd 自己提供，不需要从文件内容解码）。
-2. **启动文件夹的上一级不是项目根。** 它在 `...\Microsoft\Windows\Start Menu\Programs\Startup`，上一级是 `Programs\`，和项目所在的 `D:\` 盘没有父子关系。所以"从启动文件夹上跳一级找项目"这种写法是错的。
-3. **快捷方式必须用 `WScript.Shell` COM 接口创建**，不要手写 `.lnk` 二进制。手写那版虽然能自洽解析，但 Windows 解析不出目标（`WScript.Shell.CreateShortcut` 读回的 `TargetPath` 是空），双击完全没有反应。原因是 `LinkTargetIDList` 的结构细节：根项应当是 "My Computer" 的 CLSID 项（`1f 50` + 16 字节 CLSID），而不是直接从盘符项 `1f 2a` 开始。
-4. **`Get-NetTCPConnection` 在这台机器上需要管理员权限，会报"拒绝访问"。** `scripts\start-edge-monitor.ps1` 用它判断 9222 的占用进程，启动时若监测 Edge 已在监听，这段逻辑就会拿不到进程、进而抛 `Monitor port 9222 is still occupied` 并中止 —— **后台因此永远起不来**。这是实测到的：开机后 `startup.log` 只有 `autostart-enter` / `autostart-launched`，没有 `browser-ready`，`logs\server.log` 也完全没有新增，同时 9222 已经在监听。所以开机自启不能再走那个脚本。
-5. **`.vbs` 启动器里的 PowerShell 日志调用在这台机器上会静默失败。** `launchers\launch-monitor.vbs` 退出码为 0、监测也照常启动，但它调用的 `scripts\log-startup-event.ps1` 不写任何内容，导致 `startup.log` 停止记录、看起来像"自启失效"。这正是自启改为批处理自己写日志的原因。该 `.vbs` 对**手动双击**仍然可用。
-6. 项目内的 `.ps1` 尽量保持纯 ASCII 注释：Windows PowerShell 5.1 会把无 BOM 的 UTF-8 文件按 ANSI 读取，中文注释会变成乱码并可能破坏解析；用 PowerShell 处理本项目里任何含中文的 UTF-8 文件前都要先确认编码，否则会把文件改坏（这一条我亲身踩过）。
-7. **`curl` 的探测结果要按字符串比较。** 后台没在跑时 `curl -w "%%{http_code}"` 输出的是 `000` 而不是空，所以脚本判断的是 `if "%BACKEND_UP%"=="200"`，不能拿"为空"当"没起来"。
-
-页面不再内置活动、积分或个人信息演示数据。未连接后台或抓取失败时会显示“等待主页数据”。后台会从未央雨课堂的活动报名列表抓取活动卡片，再回到个人主页读取个人信息；所有展示内容均来自未央雨课堂页面。
-
-活动报名页实际提供了活动名称、开班时间、人数、分类标签、简介和报名状态。积分只有在活动卡片或简介中明确出现时才会显示；页面没有提供的字段保持为空，不会推测或补造。
 
 ## 目录结构
 
