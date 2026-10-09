@@ -60,11 +60,6 @@ node tools\install-autostart.js
 
 这会在当前用户的启动目录创建快捷方式 `未央观察站.lnk`，不需要管理员权限。开机后在后台监测，**不打开**雨课堂网站、监测网页，也**不会出现任何窗口**；桌面通知仍会按设置弹出。
 
-> **自启只有一个入口，就是这个 `node tools\install-autostart.js`。** 早期版本还提供过
-> `scripts\install-startup.ps1` 和 `run-monitor.ps1 -InstallStartup` 两条 PowerShell 路径，
-> 它们写的是**同一个** `未央观察站.lnk`，但目标指向 `launchers\launch-monitor.vbs` —— 那个
-> `.vbs` 的 PowerShell 日志调用在这台机器上静默失败，会造成"自启失效、`startup.log` 不增长"
-> 的假象，而且会和上面这条命令互相覆盖。这两条路径已删除，不要再使用。
 
 **关掉开机自启**（同样不需要管理员权限）：
 
@@ -82,54 +77,8 @@ node tools\install-autostart.js --check
 
 安装脚本会在安装前检查两个脚本的编码，安装后用 Windows 自己的接口读回快捷方式，打印目标、参数、工作目录以及这几个路径是否真实存在。
 
-**开机后怎么确认它生效了**：看项目根 `startup.log` 是否新增下面这几行（`000` 表示探测到后台没在跑，于是启动；若已在跑会写 `autostart-backend-reused` 并直接结束，不会重复启动）：
 
-```
-2026-10-10 02:14:59 | autostart-enter            | file=start-autostart.cmd
-2026-10-10 02:14:59 | autostart-node             | exe=C:\Program Files\nodejs\node.exe
-2026-10-10 02:15:01 | autostart-probe            | http=000
-2026-10-10 02:15:01 | autostart-backend-starting | url=http://127.0.0.1:8787
-2026-10-10 02:15:01 | autostart-backend-launched | start-errorlevel=0
-```
-
-> 判断后台是否正常，看 8787 和 `/api/state` 里的 `status` 即可（**开机后 9222 是关闭的，这是正常的**：监测浏览器由后台自己用 Playwright 拉起，不开放调试端口）：
->
-> ```powershell
-> curl.exe -s http://127.0.0.1:8787/api/state
-> ```
-
-<details>
-<summary><b>自启是怎么实现的，以及为什么这么绕（点开）</b></summary>
-
-涉及三个文件：
-
-| 文件 | 角色 |
-| --- | --- |
-| 快捷方式 `未央观察站.lnk` | 由 Windows 在登录时启动，目标是 `wscript.exe`，参数是下面的 `.vbs` |
-| `start-autostart.vbs` | 用 `WScript.ScriptFullName` 定位自己所在的项目根，再以隐藏方式运行批处理。**必须留在项目根** |
-| `start-autostart.cmd` | 真正干活儿：探测 8787 是否已在跑、没跑就启动 `src\server.js`、每一步写 `startup.log`。**也必须留在项目根**（靠 `%~dp0` 自定位） |
-
-**目标为什么是 `wscript.exe`，而不是直接指向批处理？** 因为快捷方式指向 `.cmd` 时，Windows 会为它开一个控制台窗口（标题取自快捷方式名，也就是一个名叫"未央观察站"的黑框）；而用 `start /b` 起的后台挂在这个控制台上，**关掉窗口会把后台一起杀掉** —— 实测关窗后 8787 立即变成 DOWN、`logs\server.log` 停止增长。`wscript.exe` 是 GUI 宿主，不创建控制台，所以既没有窗口可关，后台也不会被带走。
-
-启动器只保证一件事：**后台在跑**。输出追加到 `logs\server.log`（崩溃会留下证据）。监测用的无头浏览器由后台自己在需要时启动，启动器不操心，也**不调用** `scripts\start-edge-monitor.ps1`（那个脚本对**手动**使用仍然可用，只是不能再参与开机自启）。
-
-**移动过项目目录后要重新运行一次安装**：快捷方式里存的是绝对路径。
-
-**改动自启相关文件前，先读这一节。** 下面每一条都是实测踩出来的：
-
-1. **`.cmd` 里不要用 `set` 存含中文的路径。** `cmd.exe` 按 ANSI 代码页解析 `.cmd`，实测 `set "ROOT=D:\工程文件\..."` 会把路径写坏（变量回显成乱码），之后所有 `if exist "%ROOT%..."` 全部失败，表现为双击毫无反应、连日志都没有。`%~dp0` 不受影响（由 cmd 自己提供，不需要从文件内容解码）。
-2. **`.cmd` 和 `.vbs` 必须纯 ASCII。** cmd 按 ANSI 解析 `.cmd`，WSH 按 ANSI 读 `.vbs`，中文注释会变乱码并可能破坏解析。安装脚本会在安装前检查并告警。（`.ps1` 同理：Windows PowerShell 5.1 把无 BOM 的 UTF-8 当 ANSI 读。）
-3. **启动文件夹的上一级不是项目根。** 它在 `...\Microsoft\Windows\Start Menu\Programs\Startup`，上一级是 `Programs\`，和项目所在的 `D:\` 盘没有父子关系，所以"从启动文件夹上跳一级找项目"是错的。
-4. **`Get-NetTCPConnection` 在这台机器上需要管理员权限，会报"拒绝访问"。** `scripts\start-edge-monitor.ps1` 用它判断 9222 的占用进程；开机时监测浏览器已在监听，这段拿不到进程就抛 `Monitor port 9222 is still occupied` 并中止，**后台因此永远起不来**。实测特征：`startup.log` 只有 `autostart-enter` / `autostart-launched`，没有 `browser-ready`，`logs\server.log` 完全没有新增，而 9222 已在监听。
-5. **`.vbs` 里的 PowerShell 日志调用在这台机器上会静默失败。** `launchers\launch-monitor.vbs` 退出码为 0、监测也照常启动，但它调用的 `scripts\log-startup-event.ps1` 不写任何内容，导致 `startup.log` 停止记录、看起来像"自启失效"。这正是自启改为批处理自己写日志（`cmd` 的 `echo >>`，不会静默失败）的原因。
-6. **快捷方式必须用 `WScript.Shell` COM 接口创建，不要手写 `.lnk` 二进制。** 手写那版能自洽解析，但 Windows 解析不出目标（读回的 `TargetPath` 是空），双击毫无反应。结构差异在 `LinkTargetIDList`：根项应是 "My Computer" 的 CLSID 项（`1f 50` + 16 字节 CLSID），而不是直接从盘符项 `1f 2a` 开始。
-7. **`curl` 的探测结果要按字符串比较。** 后台没在跑时 `curl -w "%%{http_code}"` 输出的是 `000` 而不是空，所以判断写成 `if "%BACKEND_UP%"=="200"`，不能拿"为空"当"没起来"。
-8. **日志出现 `vbs-ERROR`** 说明 `.vbs` 找不到批处理（一般是被移动或删掉了）；出现 `autostart-ERROR` 会附带具体原因。
-9. **改完 `.ps1` 记得重跑 `node tools\fix-ps1-encoding.js`。** 含中文的 `.ps1` 必须是 UTF-8 **带 BOM**：PS 5.1 对无 BOM 的文件按 ANSI(GBK) 解码，中文注释会变乱码。但很多编辑器（包括自动化改文件的方式）保存时会去掉 BOM，所以这个脚本的作用就是"每次改完跑一遍"，幂等、可反复运行。`.cmd` 不能靠 BOM 解决（cmd 会把 BOM 当命令的一部分），只能写成纯 ASCII。
-
-</details>
-
-页面不再内置活动、积分或个人信息演示数据。未连接后台或抓取失败时会显示“等待主页数据”。后台会从未央雨课堂的活动报名列表抓取活动卡片，再回到个人主页读取个人信息；所有展示内容均来自未央雨课堂页面。
+未连接后台或抓取失败时，会显示“等待主页数据”。后台会从未央雨课堂的活动报名列表抓取活动卡片，再回到个人主页读取个人信息；所有展示内容均来自未央雨课堂页面。
 
 活动报名页实际提供了活动名称、开班时间、人数、分类标签、简介和报名状态。积分只有在活动卡片或简介中明确出现时才会显示；页面没有提供的字段保持为空，不会推测或补造。
 
