@@ -68,3 +68,11 @@ footer{display:flex;align-items:center;gap:22px;color:#afb7c0;font-size:10px;pad
 .activity-row.registered{opacity:.45}
 .activity-row.registered:hover,.activity-row.registered:focus-within{opacity:.75}
 .activity-row.registered .register-button{cursor:pointer}
+/* 所在板块积分已拿满的活动：不再计入“待关注活动”，所以视觉上也要退到后面。
+   这里用比 .registered 更轻的淡化（.78 而不是 .45）—— 活动本身仍然完全可报名、
+   可点击，只是不再催你，不该淡到像已经处理过一样。 */
+.activity-row.satisfied{opacity:.78}
+.activity-row.satisfied:hover,.activity-row.satisfied:focus-within{opacity:1}
+/* 达标标记。用中性灰而不是绿色：绿色在这个界面里已经是“积分”的语义
+   （见 .points-pill），这里表达的是“不必再做”，用灰更准确、也不抢注意力。 */
+.done-tag{font-size:9px;color:#8b95a3;background:#f2f4f7;border-radius:3px;padding:3px 5px;width:max-content;align-self:center;white-space:nowrap}

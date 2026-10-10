@@ -118,6 +118,28 @@ function thresholdFor(section) {
   return Number(config.pointThresholds?.[section] ?? config.pointThresholds?.default ?? 5);
 }
 
+// 板块积分是否已达标（current >= target）。
+//
+// 达标的板块不再提醒、也不计入“待关注活动”：那个板块的积分已经拿满，再报名同一板块
+// 的活动不会带来额外积分，提醒只会变成噪音。
+//
+// 注意“数据是否可信”：积分页抓不到东西时（登录态失效会被跳回主页），一定是
+// 0 个板块，此时绝不能据此判定“都没达标以外的结论”；反过来也要小心别把
+// “旧数据恰好达标”当成当前状态。所以调用方只在本次积分页确实可用时才启用这个过滤
+// （见 scanOnce 里的 scorePageUsable）。
+//
+// 仍然保留在活动列表里展示（前端会打上“板块已达标”标记）——只是不再催你去报名，
+// 而不是把活动藏起来：用户可能仍有其他理由想报名。
+function satisfiedSections(points) {
+  const done = new Set();
+  for (const item of Array.isArray(points) ? points : []) {
+    const target = Number.isFinite(item?.target) ? item.target : thresholdFor(item?.section);
+    const current = Number.isFinite(item?.current) ? item.current : 0;
+    if (target > 0 && current >= target) done.add(item.section);
+  }
+  return done;
+}
+
 // 记录用户已经点过“去报名”的活动。无论是从仪表盘点，还是从 Windows 提醒
 // 窗口的“立刻报名”点，都会走 /api/activity/open，最终记录在这里。
 // 记录进状态文件，因此刷新页面、重启服务后依然有效。
@@ -854,11 +876,26 @@ async function scan() {
     const activitiesWithRegistration = (data.activities || []).map((item) => (
       registeredAtByTitle.has(item.title) ? { ...item, registeredAt: registeredAtByTitle.get(item.title) } : item
     ));
-    const newCount = hasBaseline ? activitiesWithRegistration.filter((item) => item.points > 0 && !item.registeredAt && !previousIds.has(`${item.section}|${item.type}|${item.title}`)).length : 0;
-    lastState = { backend: { status: 'online', lastScan: now(), authRequired: false, error: null, newCount, scanSuccessful: true }, ...data, activities: activitiesWithRegistration, points: mergedPoints, profile: mergedProfile };
+    // 本次积分页确实可用时才启用“板块已达标就不提醒”的过滤。见 satisfiedSections 的注释。
+    const satisfied = scorePageUsable ? satisfiedSections(mergedPoints) : new Set();
+    const isDone = (item) => satisfied.has(item.section);
+    const needsAttention = (item) => item.points > 0 && !item.registeredAt && !isDone(item);
+    const newCount = hasBaseline ? activitiesWithRegistration.filter((item) => needsAttention(item) && !previousIds.has(`${item.section}|${item.type}|${item.title}`)).length : 0;
+    if (satisfied.size) {
+      const list = [...satisfied].join('、');
+      const skipped = activitiesWithRegistration.filter((item) => item.points > 0 && !item.registeredAt && isDone(item)).length;
+      console.log(`[达标] 已满分板块：${list}（因此不再提醒其中的 ${skipped} 个活动）`);
+    }
+    lastState = {
+      backend: { status: 'online', lastScan: now(), authRequired: false, error: null, newCount, scanSuccessful: true, sectionsSatisfied: [...satisfied] },
+      ...data,
+      activities: activitiesWithRegistration,
+      points: mergedPoints,
+      profile: mergedProfile
+    };
     persistState();
     if (newCount > 0) {
-      const firstNew = activitiesWithRegistration.find((item) => item.points > 0 && !item.registeredAt && !previousIds.has(`${item.section}|${item.type}|${item.title}`));
+      const firstNew = activitiesWithRegistration.find((item) => needsAttention(item) && !previousIds.has(`${item.section}|${item.type}|${item.title}`));
       // 提醒窗口的“立刻报名”会回调 /api/activity/open 并附上活动标题，
       // 因此从提醒窗口报名的活动同样会被记为“已报名”。优先给它详情页地址。
       notifyWindows('未央雨课堂活动提醒', notificationMessage(firstNew), 60, firstNew.detailUrl || firstNew.url || '', firstNew.title || '').then((result) => {

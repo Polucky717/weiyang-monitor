@@ -15,6 +15,9 @@ let lastNewCount = 0;
 let backendState = '未连接';
 let dataReady = false;
 let stateSyncTimer;
+// 已达标（积分拿满）的板块，来自后端 backend.sectionsSatisfied。
+// 后台只在积分页确实抓到时才给这个字段，避免拿过期数据误判。
+let satisfiedSections = new Set();
 const $ = (selector) => document.querySelector(selector);
 
 // 左侧图标按板块区分，方便一眼认出活动属于哪一类。
@@ -135,6 +138,7 @@ function applyRemoteState(state) {
   remoteConnected = state.backend?.status === 'online';
   backendState = state.backend?.status || 'unknown';
   lastNewCount = Number(state.backend?.newCount || 0);
+  satisfiedSections = new Set(Array.isArray(state.backend?.sectionsSatisfied) ? state.backend.sectionsSatisfied : []);
   // 启动扫描尚未完成或临时失败时，也要显示磁盘缓存/上一次成功结果。
   dataReady = remoteConnected || Boolean(
     state.backend?.scanSuccessful || state.profile?.name || state.points.length || state.activities.length
@@ -168,8 +172,14 @@ async function requestRemoteScan() {
 
 // “正在报名中的活动”列表的筛选规则只有一个：是否开放报名。
 // 不再按板块积分是否达标过滤 —— 只要还能报名就展示（用户可能有其他考虑而想报名）。
+// 但已达标板块的活动会打上标记、且不计入“待关注活动”：那个板块积分已满，
+// 再报名不会带来额外积分，所以不再催，但也不把活动藏起来。
 function qualifies(activity) {
   return Boolean(activity?.canRegister);
+}
+
+function isSectionSatisfied(activity) {
+  return satisfiedSections.has(activity?.section);
 }
 
 function renderActivities() {
@@ -178,14 +188,15 @@ function renderActivities() {
   // 列表只按“是否开放报名”筛选，不看是否点过“去报名”：
   // 只要还在报名期就完整展示，方便随时回去查看或再次进入报名页。
   const visible = activities.filter((activity) => qualifies(activity) && (currentFilter === '全部板块' || activity.section === currentFilter));
-  // “待关注活动”计数是另一套口径：只统计还没报名的，报名过的活动不再重复提醒
-  // （性能上这也是对账用的数字，与列表长度可以不同，两者是刻意分开的）。
-  const pending = visible.filter((activity) => !activity.registeredAt);
+  // “待关注活动”计数是另一套口径：只统计还没报名、且所在板块积分还没拿满的
+  // （报名过的、以及板块已达标的不再重复提醒）。所以这个数字与列表长度可以不同，
+  // 两者是刻意分开的。
+  const pending = visible.filter((activity) => !activity.registeredAt && !isSectionSatisfied(activity));
   list.innerHTML = visible.map((activity) => `
-    <article class="activity-row${activity.registeredAt ? ' registered' : ''}">
+    <article class="activity-row${activity.registeredAt ? ' registered' : ''}${isSectionSatisfied(activity) ? ' satisfied' : ''}">
       <div class="activity-icon ${activity.tone}">${iconFor(activity)}</div>
       <div class="activity-main"><strong>${activity.title}</strong><p>${activity.description || ''}</p></div>
-      <div class="activity-tags"><span class="section-tag ${activity.tone === 'orange' ? 'orange' : activity.tone === 'pink' ? 'pink' : ''}">${activity.section}</span><div class="points-pill">${activity.points == null ? '—' : `+${activity.points}`}<small>${activity.points == null ? '' : '分'}</small></div></div>
+      <div class="activity-tags"><span class="section-tag ${activity.tone === 'orange' ? 'orange' : activity.tone === 'pink' ? 'pink' : ''}">${activity.section}</span>${isSectionSatisfied(activity) ? '<span class="done-tag" title="该板块积分已拿满，再报名不会增加积分，因此不再提醒">板块已达标</span>' : ''}<div class="points-pill">${activity.points == null ? '—' : `+${activity.points}`}<small>${activity.points == null ? '' : '分'}</small></div></div>
       <button class="register-button" data-id="${activity.id}">去报名 <span>↗</span></button>
     </article>`).join('');
   $('#emptyState').classList.toggle('hidden', visible.length > 0);
