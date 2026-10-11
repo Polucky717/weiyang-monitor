@@ -7,6 +7,8 @@
 
 ## 首次运行真实监测
 
+**请确保已经安装了Node.js，可以在https://nodejs.org/zh-cn/download/下载。**
+
 推荐直接运行一键脚本：双击 `run-monitor.cmd`，或者在 PowerShell 中执行：
 
 ```powershell
