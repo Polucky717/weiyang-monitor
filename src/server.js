@@ -875,14 +875,42 @@ async function extractScoreProgress(page) {
     const pageText = clean(document.body?.innerText || '').slice(0, 4000);
     const fallbackMatch = totalMatch
       || pageText.match(/(?:获得|累计|共)\s*(\d+(?:\.\d+)?)\s*(?:个)?\s*积分/);
-    // scraped 表示“积分页确实渲染出来了”。登录态失效时页面会被跳回主页，
-    // 此时既没有表格也没有摘要，必须与“页面在但确实 0 分”区分开，
-    // 否则会把 0 当成真实分数覆盖掉已知的累计积分。
-    const scraped = Boolean(document.querySelector('.my-score'))
-      || Boolean(document.querySelector('.el-table__body-wrapper'))
-      || Boolean(totalMatch);
-    return { rows, totalPoints: fallbackMatch ? Number(fallbackMatch[1]) : null, scraped };
-  }).catch(() => ({ rows: [], totalPoints: null, scraped: false }));
+    // scraped 表示“这次真的从积分页读到了数据”。
+    //
+    // 这里绝对不能只看容器元素在不在：积分页是 SPA，`.my-score` 和
+    // `.el-table__body-wrapper` 这些是**空壳容器**，数据是通过接口异步填进去的。
+    // 曾经用「元素存在」当判据，结果在数据尚未渲染时认定 scraped=true，
+    // 又把页面上的“0 积分”当成真实总分采纳，把已知的 14 分覆盖成 0
+    // （日志证据：`采用=0（0 个板块，积分页可用=true）`）。所以现在只认两件事：
+    // 要么解析出了明细行，要么从摘要文本里明确读到“获得 N 积分”。
+    //
+    // totalRead 单独记录“分数文字是否真的读到过”：totalPoints 为 0 有可能来自
+    // 别处（例如个人主页把“0 个人积分”误读成总分），不能把它当成“确认是 0 分”。
+    const scraped = rows.length > 0 || Boolean(totalMatch);
+    // 抓不到时要能分辨原因，否则日志只留下“0 个板块”，没法判断是页面没渲染、
+    // 还是页面改版导致选择器失效。这里把几件事记下来：
+    //   hasMyScore   积分页的根容器在不在（不在 = 多半被跳转回主页了）
+    //   hasTable     表格容器在不在
+    //   rawRowCount  表格里的原始行数（未经字段过滤）——若 >0 而 rows=0，
+    //                说明行有了但列选择器（el-table_1_column_N）变了
+    //   headings     页面上疑似表头的文字，便于对照真实列名
+    const hasMyScore = Boolean(document.querySelector('.my-score'));
+    const hasTable = Boolean(document.querySelector('.el-table__body-wrapper'));
+    const rawRowCount = document.querySelectorAll('.my-score .el-table__body-wrapper tbody tr').length
+      || document.querySelectorAll('.el-table__body-wrapper tbody tr').length;
+    const headings = [...document.querySelectorAll('.my-score .el-table__header-wrapper th, .el-table__header-wrapper th')]
+      .map((node) => clean(node.textContent)).filter(Boolean).slice(0, 10);
+    return {
+      rows,
+      totalPoints: fallbackMatch ? Number(fallbackMatch[1]) : null,
+      totalRead: Boolean(fallbackMatch),
+      scraped,
+      diagnostics: { hasMyScore, hasTable, rawRowCount, headings }
+    };
+  }).catch((error) => ({
+    rows: [], totalPoints: null, totalRead: false, scraped: false,
+    diagnostics: { hasMyScore: false, hasTable: false, rawRowCount: -1, headings: [], error: String(error && error.message || error).slice(0, 120) }
+  }));
   const grouped = new Map();
   for (const row of result.rows) {
     const current = grouped.get(row.section) || { section: row.section, current: 0, target: thresholdFor(row.section), tone: toneFor(row.section) };
@@ -893,7 +921,9 @@ async function extractScoreProgress(page) {
     points: [...grouped.values()],
     rows: result.rows,
     totalPoints: Number.isFinite(result.totalPoints) ? result.totalPoints : null,
+    totalRead: Boolean(result.totalRead),
     scraped: Boolean(result.scraped),
+    diagnostics: result.diagnostics || null,
     recentPoints: result.rows.length ? result.rows[0].current : null,
     recentActivity: result.rows[0]?.activity || ''
   };
@@ -931,6 +961,11 @@ async function scan() {
     // 积分页偶尔会被登录跳转拦回主页，导致拿不到板块数据。记录真实落点与行数，
     // 便于对照日志判断“累计积分为 0”是页面没抓到，还是本来就真的没有积分。
     console.log(`[积分页] 落点=${page.url()} 板块数=${scoreData.points.length} 页面总分=${scoreData.totalPoints} 明细行=${scoreData.rows?.length ?? '-'}`);
+    const diag = scoreData.diagnostics;
+    if (diag && scoreData.points.length === 0) {
+      // 抓不到板块时把页面的实际形态打出来：只有“0 个板块”这一条信息是无法排查的。
+      console.log(`[积分页-诊断] 根容器=${diag.hasMyScore} 表格容器=${diag.hasTable} 原始行数=${diag.rawRowCount} 表头=[${(diag.headings || []).join(' | ')}]${diag.error ? ' 错误=' + diag.error : ''}`);
+    }
     await openActivityListFromHome(page);
     const loginRequired = /login|signin|passport/i.test(page.url());
     if (loginRequired) throw Object.assign(new Error('登录态已失效，请运行 npm run login 重新登录。'), { authRequired: true });
@@ -947,16 +982,40 @@ async function scan() {
     // 因此优先级：各板块之和 > 页面明确总分 > 上一次的值。
     const pointsSum = scoreData.points.reduce((sum, item) => sum + (Number.isFinite(item.current) ? item.current : 0), 0);
     const explicitTotal = scoreData.totalPoints ?? profileData.totalPoints ?? null;
-    // 登录态失效时积分页会被跳回主页：抓不到任何板块，页面总分也读成 0。
-    // 这种“页面没抓到东西”的情况下必须沿用上一次已知的分数，不能把 0 当真写下去，
-    // 否则只要会话过期一次，累计积分就会从 14 掉成 0。
+    // “积分页这次到底读没读到东西”。scraped 现在只认“解析出明细行”或“摘要里读到
+    // 获得 N 积分”，不再认容器元素是否存在（SPA 空壳阶段容器已在、数据还没到）。
     const scorePageUsable = scoreData.points.length > 0 || scoreData.scraped === true;
-    const totalPoints = scoreData.points.length
-      ? pointsSum
-      : (scorePageUsable && Number.isFinite(explicitTotal)
-        ? explicitTotal
-        : (previousProfile.totalPoints ?? (Number.isFinite(explicitTotal) ? explicitTotal : null)));
-    console.log(`[积分] 板块合计=${pointsSum} 页面总分=${explicitTotal} 采用=${totalPoints}（${scoreData.points.length} 个板块，积分页可用=${scorePageUsable}）`);
+    // 累计积分的取值顺序：
+    //   1. 本次真的抓到了板块明细 → 用各板块之和（最可靠，逐行累加得到）
+    //   2. 积分页这次读不到东西 → 沿用上一次已知的值，绝不用 0 覆盖
+    //   3. 积分页可用但板块为空 → 用页面明确总分
+    //   4. 都没有 → 沿用上一次的值
+    // 关键在第 2、4 步的兜底：会话过期/接口空壳时“读不到”不等于“真的是 0”，
+    // 把读不到的 0 写进去会让用户的累计积分凭空归零（曾经发生过：从 14 掉成 0）。
+    const keptTotal = Number.isFinite(previousProfile.totalPoints) ? previousProfile.totalPoints : null;
+    // 只有当“总分的文字这次真的读到了”且值大于 0 时，才接受 explicitTotal。
+    // 两个理由：
+    //   * 没有 totalRead，那个 0 可能来自别处（个人主页会把“0 个人积分”误读成
+    //     总分），它证明不了用户真的是 0 分；
+    //   * 既然上一次已确认有积分，本次算出的 0 几乎一定是抓取失败，不是真的清零。
+    // 真要变成 0 分，也只可能在明确读到“获得 0 积分”时才发生。
+    const explicitTrustworthy = scoreData.totalRead && Number.isFinite(explicitTotal) && explicitTotal > 0;
+    let totalPoints;
+    let totalSource;
+    if (scoreData.points.length) {
+      totalPoints = pointsSum;
+      totalSource = '板块之和';
+    } else if (explicitTrustworthy) {
+      totalPoints = explicitTotal;
+      totalSource = '页面总分';
+    } else if (Number.isFinite(keptTotal)) {
+      totalPoints = keptTotal;
+      totalSource = '沿用上一次';
+    } else {
+      totalPoints = Number.isFinite(explicitTotal) ? explicitTotal : null;
+      totalSource = Number.isFinite(explicitTotal) ? '页面总分(未确认)' : '无可用数据';
+    }
+    console.log(`[积分] 板块合计=${pointsSum} 页面总分=${explicitTotal} 采用=${totalPoints}（来源=${totalSource}，${scoreData.points.length} 个板块，积分页可用=${scorePageUsable}，读到了总分文字=${scoreData.totalRead}，上次已知=${keptTotal}）`);
     const mergedProfile = {
       ...previousProfile,
       ...profileData,
