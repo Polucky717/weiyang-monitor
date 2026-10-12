@@ -2,7 +2,7 @@
 
 一个带本地持久化登录后台的活动积分监测器。直接打开 `index.html` 可以体验界面；要抓取真实未央雨课堂数据，请按下面的后台步骤运行。
 
-<img width="2631" height="1544" alt="屏幕截图 2026-10-12 112910" src="https://github.com/user-attachments/assets/8987e166-cb15-4729-ba91-1cac94116520" />
+<img width="2813" height="1639" alt="屏幕截图 2026-10-10 000647" src="https://github.com/user-attachments/assets/312d33f2-e822-4412-89ab-a8d7ef21c2a6" />
 
 
 ## 首次运行真实监测
@@ -60,8 +60,23 @@ Chrome/Edge 的 CDP 后台适配连接系统中已安装的浏览器，此路径
 node tools\install-autostart.js
 ```
 
-这会在当前用户的启动目录创建快捷方式 `未央观察站.lnk`。开机后在后台监测，**不打开**雨课堂网站、监测网页，也**不会出现任何窗口**；桌面通知仍会按设置弹出。
+这会在当前用户的启动目录创建快捷方式 `未央观察站.lnk`，不需要管理员权限。开机后在后台监测，**不打开**雨课堂网站、监测网页，也**不会出现任何窗口**；桌面通知仍会按设置弹出。
 
+**关掉开机自启**（同样不需要管理员权限）：
+
+```powershell
+node tools\install-autostart.js --remove
+```
+
+也可以手动删：`Win+R` 输入 `shell:startup`，把里面的 `未央观察站.lnk` 删掉即可。
+
+**查看自启状态**：
+
+```powershell
+node tools\install-autostart.js --check
+```
+
+安装脚本会在安装前检查两个脚本的编码，安装后用 Windows 自己的接口读回快捷方式，打印目标、参数、工作目录以及这几个路径是否真实存在。
 
 ## 复用已经登录的 Edge
 
