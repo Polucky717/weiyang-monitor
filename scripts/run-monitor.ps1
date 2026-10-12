@@ -16,6 +16,14 @@ function Invoke-Step([string]$Command, [string[]]$Arguments) {
   }
 }
 
+# 把便携式 Node.js 目录挂到 PATH 前面：run-monitor.cmd 里的 find-node.cmd
+# 可能解析到 %LOCALAPPDATA%\weiyang-node（首次配置时自动下载的那份），它不在
+# PATH 上，而 npm.cmd 就在 node.exe 旁边 —— 不挂上去就找不到 npm。
+$portableNode = Join-Path $env:LOCALAPPDATA 'weiyang-node'
+if (Test-Path -LiteralPath (Join-Path $portableNode 'npm.cmd')) {
+  $env:PATH = $portableNode + ';' + $env:PATH
+}
+
  $npmCommand = (Get-Command npm.cmd -ErrorAction SilentlyContinue).Source
 if (-not $npmCommand) { $npmCommand = (Get-Command npm.exe -ErrorAction SilentlyContinue).Source }
 if (-not $npmCommand) {

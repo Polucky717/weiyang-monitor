@@ -49,15 +49,15 @@ if not exist "%SERVER%" (
   exit /b 2
 )
 
-rem Resolve node.exe explicitly - PATH is not reliable at logon time.
-if exist "%ProgramFiles%\nodejs\node.exe" set "NODEEXE=%ProgramFiles%\nodejs\node.exe"
-if not defined NODEEXE if exist "%ProgramFiles(x86)%\nodejs\node.exe" set "NODEEXE=%ProgramFiles(x86)%\nodejs\node.exe"
-if not defined NODEEXE if exist "%LOCALAPPDATA%\Programs\nodejs\node.exe" set "NODEEXE=%LOCALAPPDATA%\Programs\nodejs\node.exe"
+rem Resolve node.exe via the shared helper: PATH is not reliable at logon time,
+rem and a portable Node.js (downloaded by scripts\ensure-node.ps1) lives in
+rem %LOCALAPPDATA%\weiyang-node, which is not on PATH at all.
+rem Deliberately NOT passing /install: auto-start must never trigger a ~30 MB
+rem download behind the user's back. The first-run path
+rem (scripts\run-monitor.cmd) is where a missing Node.js gets fetched.
+call "%~dp0scripts\find-node.cmd"
 if not defined NODEEXE (
-  for %%N in (node.exe) do if not "%%~$PATH:N"=="" set "NODEEXE=%%~$PATH:N"
-)
-if not defined NODEEXE (
-  echo %date% %time% ^| autostart-ERROR ^| node.exe-not-found >> "%LOG%"
+  echo %date% %time% ^| autostart-ERROR ^| node.exe-not-found ^| hint=run scripts\run-monitor.cmd >> "%LOG%"
   exit /b 3
 )
 echo %date% %time% ^| autostart-node ^| exe=%NODEEXE% >> "%LOG%"

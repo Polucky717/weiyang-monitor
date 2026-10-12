@@ -506,6 +506,33 @@ function resolveSection(tags, fallbackTag = '', activityForm = '') {
   return fallbackTag || (String(activityForm).includes('微沙龙') ? '微沙龙讲座' : '');
 }
 
+// 已知的板块名全集：五大积分板块 + 装修/活动形式类标签（见上面 resolveSection 的注释）。
+// 用来从活动文本里认出板块名。
+const KNOWN_SECTIONS = [...CORE_POINT_SECTIONS, '微沙龙讲座', '比赛培训', '学业支持', '健康心理', '实践创新'];
+
+// 从活动文本里扫板块名。积分说明句几乎总是把板块名写在引号里且紧挨着"积分"，
+// 例如：积分发放：“信息工业”板块2积分，由土木学院发放
+// 这种句子是"哪个板块拿分"的明确声明，比接口 tags 更权威 —— 实测有活动的 tags
+// 缺失或顺序不对，此时只有文本里能确定板块，活动就会因为 section 为空被丢掉。
+//
+// 只认引号包裹（“X”/"X"/'X'）或紧邻"板块"二字的写法，避免把正文里偶然出现的
+// 板块名当成积分归属。
+function sectionFromText(text) {
+  const lines = String(text || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  for (const line of lines) {
+    if (!/积分/.test(line)) continue;
+    // 1) 引号里的板块名
+    for (const match of line.matchAll(/[“"']([^“"'\r\n]{2,8})[”"']/g)) {
+      const name = match[1].trim();
+      if (KNOWN_SECTIONS.includes(name)) return name;
+    }
+    // 2) "X板块" 这种不带引号的写法
+    const bare = line.match(/([\u4e00-\u9fff]{2,8})板块/);
+    if (bare && KNOWN_SECTIONS.includes(bare[1].trim())) return bare[1].trim();
+  }
+  return '';
+}
+
 // 列表接口的 page_size 上限是 50（传更大也只返回 50），所以取全量活动必须翻页。
 // 页面本身只有 22 页 / 212 条，而界面一页只渲染 10 张卡片——只读第一页就会漏掉
 // 绝大部分活动。这里按页把所有记录取回来；第一页就失败则返回空数组，
@@ -563,6 +590,52 @@ async function fetchAllActivityRecords(page, baseUrl, headers) {
 // 把接口记录转成与页面卡片一致的结构。接口是权威来源：它给出精确的报名状态
 // （sign_up.status）、板块（tags）、详情页哈希（sign）以及完整简介。
 // detailText 是该活动详情页的可见文本，用于补出简介里没写的积分。
+// 从任意活动文本里读出「板块名 + 积分数」这两个判定要素。
+//
+// 积分写法实测有好几种，所以用两条正则、按顺序试：
+//   A. 数字在前："1积分"、"2个单位活动积分"、"2学时 2积分"、
+//      以及被引号包住的 "积分设置：“1”积分"
+//   B. 标签在前："积分发放：“信息工业”板块2积分"（真实观测）、
+//      "积分：2"、"可获得积分 2 分"、"奖励积分：2分"
+//
+// 两条都刻意做成"单行内"匹配，且空白一律用 [ \t] 而不是 \s：
+// 详情页文本里有"讲座时间：2026年10月15日 13：30-15：05"这样的行，若允许跨行
+// 匹配，B 会从上一行的 "05" 一路吃到下一行的"积分"，把时间读成积分
+// （实测确实发生了：同一条文本里读到 05 而不是 2）。所以按行切分后再逐行匹配。
+//
+// B 的间隔上限 8 个字也必要：否则"积分获取方式"和后面不相干的数字会被连起来。
+const POINTS_PATTERNS = [
+  /(\d+(?:\.\d+)?)[ \t]*(?:个[ \t]*)?(?:单位[ \t]*)?(?:活动[ \t]*)?[“"']?[ \t]*积分/,
+  /积分[^0-9\r\n]{0,8}?(\d+(?:\.\d+)?)[ \t]*(?:个[ \t]*)?(?:单位[ \t]*)?(?:活动[ \t]*)?[ \t]*[“"']?[ \t]*分?/
+];
+
+function findPointsInText(text) {
+  const lines = String(text || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  for (const pattern of POINTS_PATTERNS) {
+    for (const line of lines) {
+      const match = line.match(pattern);
+      if (match) return match;
+    }
+  }
+  return null;
+}
+
+// 从文本里读出「板块名 + 积分数」。descText/detailText 任一能读出即可。
+// 返回的 pointsFrom 说明积分是从哪来的，便于排查。
+function readPointsAndSection(descText, detailText = '') {
+  const descMatch = findPointsInText(descText);
+  const pointsMatch = descMatch || findPointsInText(detailText);
+  return {
+    points: pointsMatch ? Number(pointsMatch[1]) : null,
+    pointsFrom: descMatch ? 'description' : (pointsMatch ? 'detail' : null),
+    // 文本里"“信息工业”板块2积分"这类声明是"哪个板块拿分"的明确说法。
+    sectionFromText: sectionFromText(descText) || sectionFromText(detailText)
+  };
+}
+
+// 把接口记录转成与页面卡片一致的结构。接口是权威来源：它给出精确的报名状态
+// （sign_up.status）、板块（tags）、详情页哈希（sign）以及完整简介。
+// detailText 是该活动详情页的可见文本，用于补出简介里没写的积分。
 function activityFromApiRecord(record, index, detailText = '') {
   const clean = (value) => String(value == null ? '' : value).replace(/\s+/g, ' ').trim();
   const title = clean(record.train_class_name);
@@ -574,48 +647,58 @@ function activityFromApiRecord(record, index, detailText = '') {
   const sign = clean(record.sign);
   const detailUrl = sign ? `https://weiyang.yuketang.cn/pro/portal/projectdetail/${sign}/` : '';
   const statusLabel = clean(signUp.label);
-  // 积分优先取简介里的“N积分 / N个单位活动积分”；简介没写时再看详情页
-  // （详情页课程条目会显示“2学时 2积分”，例如 Agent 入门精讲）。
-  const pointsPattern = /(\d+(?:\.\d+)?)\s*(?:个\s*)?(?:单位\s*)?(?:活动\s*)?积分/;
-  const descPoints = description.match(pointsPattern);
-  const detailPoints = descPoints ? null : (String(detailText || '').match(pointsPattern) || null);
-  const pointsMatch = descPoints || detailPoints;
+  const { points, pointsFrom, sectionFromText: textSection } = readPointsAndSection(description, detailText);
+  // 板块优先用接口 tags；tags 认不出积分板块时，用文本里"“信息工业”板块2积分"
+  // 这类声明补上 —— 实测有活动的 tags 缺失/顺序不对，只有文本能确定板块归属，
+  // 否则活动会因为没有 section 被展示过滤器丢掉。
+  const taggedSection = resolveSection(tagList, firstTag, activityForm);
+  const section = (taggedSection && CORE_POINT_SECTIONS.includes(taggedSection))
+    ? taggedSection
+    : (textSection || taggedSection);
   return {
     id: `train-${index}-${title}`,
     url: detailUrl || 'https://weiyang.yuketang.cn/pro/portal/trainclasslist',
     detailUrl,
     title,
     description,
-    // 页面分类标签偶尔不渲染；接口的 tags 是同一套板块名，可直接用。
-    // 多标签活动（如“先进制造 + 微沙龙讲座”）优先取五大积分板块。
-    section: resolveSection(tagList, firstTag, activityForm),
+    section,
     type: firstTag || activityForm || '',
     points: pointsMatch ? Number(pointsMatch[1]) : null,
+    pointsSource,
     meta: [clean(signUp.class_time), clean(signUp.sign_up_time)].filter(Boolean).join(' · '),
     status: statusLabel || (Number(signUp.status) === SIGNUP_OPEN_STATUS ? '立即报名' : ''),
     canRegister: Number(signUp.status) === SIGNUP_OPEN_STATUS
   };
 }
 
-// 有的活动把积分只写在详情页上（简介完全没提）。这类活动同样值得提醒，
-// 因此只为“开放报名、但简介里没有积分”的记录补开一次详情页，读它的可见文本。
-// 只对开放报名的活动做这件事，数量很少（通常个位数），不会拖慢扫描。
-async function fillPointsFromDetailPages(page, records) {
-  const targets = records.filter((record) => {
-    const sign = String(record.sign || '').trim();
-    if (!sign) return false;
-    if (Number(record?.sign_up?.status) !== SIGNUP_OPEN_STATUS) return false;
-    const description = String(record.description || '');
-    return !/(\d+(?:\.\d+)?)\s*(?:个\s*)?(?:单位\s*)?(?:活动\s*)?积分/.test(description);
-  });
+// 有的活动把积分只写在详情页/课程介绍上（简介完全没提）。这类活动同样值得提醒，
+// 所以对“简介里读不到积分、而且有详情页地址”的记录补开一次详情页，读它的可见文本。
+//
+// 为什么由调用方在“按标题去重之后”传进来：同一个标题会有多条期次记录（本期
+// “立即报名”+ 往期“报名已结束”），去重时只保留一条。如果在去重之前按记录去抓，
+// 保留下来那条可能压根没抓过，积分就丢了 —— 明明详情页写着也读不到。
+//
+// 这里只处理“可报名 + 积分还读不出来”的那些：
+//   * 不可报名的活动会被展示过滤器丢掉，为它们多开一次导航纯属浪费；
+//   * 积分已经读出来的不必再跑一趟。
+// 详情页导航是本函数里唯一的耗时来源（每条一次 goto + 1.2s 等待），
+// 所以这两个条件同时也是性能护栏。
+async function fillPointsFromDetailPages(page, targets) {
   const filled = new Map();
+  // 同一个 sign 只抓一次，避免重复导航。
+  const fetched = new Set();
   for (const record of targets) {
-    const url = `https://weiyang.yuketang.cn/pro/portal/projectdetail/${String(record.sign).trim()}/`;
+    const sign = String(record.sign).trim();
+    if (fetched.has(sign)) continue;
+    fetched.add(sign);
+    const url = `https://weiyang.yuketang.cn/pro/portal/projectdetail/${sign}/`;
     try {
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 });
       await page.waitForTimeout(1200);
       const text = await page.evaluate(() => document.body.innerText || '');
-      filled.set(String(record.train_class_id || record.sign), text);
+      // 用 sign 做 key：它在本函数里是唯一的，而 train_class_id 可能缺失或为 0，
+      // 那样 write/read 两侧的 key 就会不一致，取回来永远是空字符串。
+      filled.set(sign, text);
     } catch { /* 单个详情页失败不影响整体扫描 */ }
   }
   return filled;
@@ -638,15 +721,10 @@ async function extractActivitiesFromList(page, selectors) {
     'x-client': 'web',
     accept: 'application/json, text/plain, */*'
   }).catch(() => []);
-  // 简介里没写积分的“开放报名”活动，逐个补开详情页把积分读出来。
-  const detailTexts = await fillPointsFromDetailPages(page, apiActivities).catch(() => new Map());
   // 接口侧的统一结构：它是全量活动的权威来源，能覆盖页面第一页之外的其余活动
   // （页面只渲染 10 张卡片，接口里有 200 多条）。
-  const apiBuilt = apiActivities.map((record, index) => activityFromApiRecord(
-    record,
-    index,
-    detailTexts.get(String(record.train_class_id || record.sign)) || ''
-  )).filter((item) => item.title);
+  const apiBuilt = apiActivities.map((record, index) => activityFromApiRecord(record, index))
+    .filter((item) => item.title);
   const apiBuiltByTitle = new Map();
   const apiBuiltByUrl = new Map();
   for (const item of apiBuilt) {
@@ -701,12 +779,37 @@ async function extractActivitiesFromList(page, selectors) {
   for (const item of pageActivities) {
     if (item.title && !merged.has(item.title)) merged.set(item.title, { ...item, index: -1 });
   }
-  const activities = [...merged.values()].map(({ index, ...rest }) => rest);
 
+  // 板块筛选菜单必须在离开列表页之前抓：下面的详情页抓取会导航到别的页面，
+  // 之后再查 .filter-item-option 就什么都拿不到了。
   const sections = await page.$$eval('.filter-item-option', (nodes) => [...new Set(nodes
     .filter((node) => node.closest('.filter-item')?.querySelector('.title')?.textContent?.includes('分类标签'))
     .map((node) => node.textContent?.replace(/\s+/g, ' ').trim())
     .filter((text) => text && text !== '全部'))]).catch(() => []);
+
+  // 到这里已经确定要保留哪些活动了，再补详情页积分 —— 顺序不能提前：
+  // 提前抓的话，去重后可能保留的是另一条期次记录（本期/往期同标题），
+  // 那条没抓过详情页，积分就丢了。
+  const survivors = [...merged.values()];
+  const signOf = (item) => (item.detailUrl ? (item.detailUrl.match(/projectdetail\/([^/]+)/) || [])[1] || '' : '');
+  const detailTexts = await fillPointsFromDetailPages(page, survivors
+    .filter((item) => signOf(item) && item.canRegister && !(Number.isFinite(item.points) && item.points > 0))
+    .map((item) => ({ sign: signOf(item) }))).catch(() => new Map());
+  for (const item of survivors) {
+    // 只补读不到积分的，不覆盖已经从简介读到的值。
+    if (Number.isFinite(item.points) && item.points > 0) continue;
+    const text = detailTexts.get(signOf(item)) || '';
+    if (!text) continue;
+    const { points, sectionFromText: textSection } = readPointsAndSection('', text);
+    if (Number.isFinite(points) && points > 0) {
+      item.points = points;
+      item.pointsSource = 'detail';
+    }
+    // 详情页若声明了板块，而接口 tags 没给出积分板块，就用详情页的声明。
+    if (textSection && !CORE_POINT_SECTIONS.includes(item.section)) item.section = textSection;
+  }
+  const activities = survivors.map(({ index, ...rest }) => rest);
+
   const cardSections = [...new Set(activities.map((item) => item.section).filter(Boolean))];
   return {
     // 保留“必须能确定积分、且积分大于 0”这条规则：无法判断积分的活动不展示，

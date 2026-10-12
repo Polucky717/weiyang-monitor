@@ -58,6 +58,8 @@ const FILES = [
   'tools/publish-to-github.js',
 
   // 运行脚本（PowerShell / cmd）
+  'scripts/ensure-node.ps1',
+  'scripts/find-node.cmd',
   'scripts/log-startup-event.ps1',
   'scripts/run-connected-monitor.ps1',
   'scripts/run-monitor.ps1',
