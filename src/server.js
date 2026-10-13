@@ -663,8 +663,9 @@ function activityFromApiRecord(record, index, detailText = '') {
     description,
     section,
     type: firstTag || activityForm || '',
-    points: pointsMatch ? Number(pointsMatch[1]) : null,
-    pointsSource,
+    points,
+    // 记录来源，方便在日志和界面上判断“这个积分是猜的还是读到的”。
+    pointsSource: pointsFrom,
     meta: [clean(signUp.class_time), clean(signUp.sign_up_time)].filter(Boolean).join(' · '),
     status: statusLabel || (Number(signUp.status) === SIGNUP_OPEN_STATUS ? '立即报名' : ''),
     canRegister: Number(signUp.status) === SIGNUP_OPEN_STATUS
@@ -980,31 +981,37 @@ async function scan() {
     // 而“明确总分”并不可靠 —— 主页统计文案里含“个人积分”这类字样，正则会把
     // “0 个人积分”误抓成总分 0，于是明明有积分却显示“0 分”。
     // 因此优先级：各板块之和 > 页面明确总分 > 上一次的值。
+    // 本次实际采用的板块数据：抓到了就用新的，抓不到就沿用上一次的。
+    // 下方写回状态时用的也是这一份（points: effectivePoints），
+    // 保证“界面上的进度条”和“大字累计积分”永远出自同一组数字。
+    const effectivePoints = scoreData.points.length ? scoreData.points : (lastState.points || []);
+    const effectiveSum = effectivePoints.reduce((sum, item) => sum + (Number.isFinite(item.current) ? item.current : 0), 0);
+    // 只用于日志对照：本次真正抓到多少（scoreData.points 为空时它是 0）。
     const pointsSum = scoreData.points.reduce((sum, item) => sum + (Number.isFinite(item.current) ? item.current : 0), 0);
     const explicitTotal = scoreData.totalPoints ?? profileData.totalPoints ?? null;
     // “积分页这次到底读没读到东西”。scraped 现在只认“解析出明细行”或“摘要里读到
     // 获得 N 积分”，不再认容器元素是否存在（SPA 空壳阶段容器已在、数据还没到）。
     const scorePageUsable = scoreData.points.length > 0 || scoreData.scraped === true;
-    // 累计积分的取值顺序：
-    //   1. 本次真的抓到了板块明细 → 用各板块之和（最可靠，逐行累加得到）
-    //   2. 积分页这次读不到东西 → 沿用上一次已知的值，绝不用 0 覆盖
-    //   3. 积分页可用但板块为空 → 用页面明确总分
-    //   4. 都没有 → 沿用上一次的值
-    // 关键在第 2、4 步的兜底：会话过期/接口空壳时“读不到”不等于“真的是 0”，
-    // 把读不到的 0 写进去会让用户的累计积分凭空归零（曾经发生过：从 14 掉成 0）。
     const keptTotal = Number.isFinite(previousProfile.totalPoints) ? previousProfile.totalPoints : null;
-    // 只有当“总分的文字这次真的读到了”且值大于 0 时，才接受 explicitTotal。
-    // 两个理由：
-    //   * 没有 totalRead，那个 0 可能来自别处（个人主页会把“0 个人积分”误读成
-    //     总分），它证明不了用户真的是 0 分；
-    //   * 既然上一次已确认有积分，本次算出的 0 几乎一定是抓取失败，不是真的清零。
-    // 真要变成 0 分，也只可能在明确读到“获得 0 积分”时才发生。
+    // 累计积分的取值顺序（必须与板块数据同源，否则会出现“进度条显示 14、
+    // 大字显示 0”的自相矛盾）：
+    //   1. 有板块数据（本次抓到的，或上一次保留下来的）→ 用各板块之和
+    //   2. 页面明确读到过“获得 N 积分”且 N>0 → 用页面总分
+    //   3. 沿用上一次已知的值
+    //   4. 确实什么都没有 → 页面读到的值（可能为 null）
+    //
+    // 为什么第 1 步要接受“上一次保留的板块数据”：mergedPoints 就是这么兜底的
+    // （抓不到就沿用 lastState.points），所以进度条会一直显示 14 分。如果这里
+    // 反而退回 0，同一张卡片上就会出现互相矛盾的 14 和 0。
+    //
+    // 为什么“页面明确总分”只认大于 0 的：个人主页那个元素的实际文案是
+    // “0 个人积分”，正则会把 0 读成总分；它证明不了用户真的是 0 分。
     const explicitTrustworthy = scoreData.totalRead && Number.isFinite(explicitTotal) && explicitTotal > 0;
     let totalPoints;
     let totalSource;
-    if (scoreData.points.length) {
-      totalPoints = pointsSum;
-      totalSource = '板块之和';
+    if (effectivePoints.length) {
+      totalPoints = effectiveSum;
+      totalSource = scoreData.points.length ? '板块之和' : '板块之和(沿用上次板块)';
     } else if (explicitTrustworthy) {
       totalPoints = explicitTotal;
       totalSource = '页面总分';
@@ -1015,7 +1022,7 @@ async function scan() {
       totalPoints = Number.isFinite(explicitTotal) ? explicitTotal : null;
       totalSource = Number.isFinite(explicitTotal) ? '页面总分(未确认)' : '无可用数据';
     }
-    console.log(`[积分] 板块合计=${pointsSum} 页面总分=${explicitTotal} 采用=${totalPoints}（来源=${totalSource}，${scoreData.points.length} 个板块，积分页可用=${scorePageUsable}，读到了总分文字=${scoreData.totalRead}，上次已知=${keptTotal}）`);
+    console.log(`[积分] 板块合计=${pointsSum} 有效板块之和=${effectiveSum}(${effectivePoints.length} 个) 页面总分=${explicitTotal} 采用=${totalPoints} 来源=${totalSource} 积分页可用=${scorePageUsable} 读到总分文字=${scoreData.totalRead} 上次已知=${keptTotal}`);
     const mergedProfile = {
       ...previousProfile,
       ...profileData,
@@ -1027,7 +1034,6 @@ async function scan() {
       recentActivity: scoreData.recentActivity || profileData.recentActivity || previousProfile.recentActivity || '',
       recentActivities: profileData.recentActivities?.length ? profileData.recentActivities : (previousProfile.recentActivities || [])
     };
-    const mergedPoints = scoreData.points.length ? scoreData.points : (lastState.points || []);
     const hasBaseline = lastState.backend.lastScan !== null;
     const previousIds = new Set(lastState.activities.map((item) => `${item.section}|${item.type}|${item.title}`));
     // 新扫描出来的卡片本身不含“已报名”标记，必须从上一份状态里继承回来，
@@ -1039,7 +1045,7 @@ async function scan() {
       registeredAtByTitle.has(item.title) ? { ...item, registeredAt: registeredAtByTitle.get(item.title) } : item
     ));
     // 本次积分页确实可用时才启用“板块已达标就不提醒”的过滤。见 satisfiedSections 的注释。
-    const satisfied = scorePageUsable ? satisfiedSections(mergedPoints) : new Set();
+    const satisfied = scorePageUsable ? satisfiedSections(effectivePoints) : new Set();
     const isDone = (item) => satisfied.has(item.section);
     const needsAttention = (item) => item.points > 0 && !item.registeredAt && !isDone(item);
     const newCount = hasBaseline ? activitiesWithRegistration.filter((item) => needsAttention(item) && !previousIds.has(`${item.section}|${item.type}|${item.title}`)).length : 0;
@@ -1052,7 +1058,7 @@ async function scan() {
       backend: { status: 'online', lastScan: now(), authRequired: false, error: null, newCount, scanSuccessful: true, sectionsSatisfied: [...satisfied] },
       ...data,
       activities: activitiesWithRegistration,
-      points: mergedPoints,
+      points: effectivePoints,
       profile: mergedProfile
     };
     persistState();

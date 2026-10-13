@@ -45,6 +45,7 @@ const FILES = [
   'tools/build-release-zip.js',
   'tools/check-file-lists.js',
   'tools/check-icons.js',
+  'tools/check-scope.js',
   'tools/fix-ps1-encoding.js',
   'tools/install-autostart.js',
   'tools/publish-to-github.js',
