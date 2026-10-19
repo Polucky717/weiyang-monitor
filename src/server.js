@@ -1477,7 +1477,22 @@ if (process.argv.includes('--login')) {
     console.error(error);
     process.exitCode = 1;
   });
-  server.listen(PORT, '127.0.0.1', () => console.log(`未央观察站后台已启动：http://127.0.0.1:${PORT}`));
+  server.listen(PORT, '127.0.0.1', () => {
+    // 启动时把“本次加载的是哪份代码”写进日志。
+    // 为什么需要：排查“改了代码但行为没变”时，光看日志内容无法判断进程到底加载的
+    // 是新代码还是旧代码 —— 实际情况中就因此反复误判过（以为重启了，其实旧进程
+    // 一直占着端口在跑）。把源文件的大小与修改时间打出来，一眼就能对上。
+    let fingerprint = '未知';
+    try {
+      const stat = fs.statSync(__filename);
+      fingerprint = `${stat.size}字节 修改于${stat.mtime.toISOString()}`;
+    } catch { /* 忽略：拿不到指纹不该影响启动 */ }
+    console.log(`未央观察站后台已启动：http://127.0.0.1:${PORT}`);
+    console.log(`[启动] 已加载代码：${__filename}`);
+    console.log(`[启动] 代码指纹：${fingerprint}`);
+    console.log(`[启动] PID=${process.pid} 积分页抓取=多策略(策略[]标记) 接口兜底=extractScoreFromJson`);
+  });
+  scan();
   scan();
   setInterval(scan, Math.max(1, config.pollMinutes) * 60 * 1000);
 }
