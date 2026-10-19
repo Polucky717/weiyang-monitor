@@ -58,6 +58,7 @@ const FILES = [
   'tools/fix-ps1-encoding.js',
   'tools/install-autostart.js',
   'tools/publish-to-github.js',
+  'tools/restart-and-verify.ps1',
 
   // 运行脚本（PowerShell / cmd）
   'scripts/ensure-node.ps1',
