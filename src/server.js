@@ -1375,6 +1375,24 @@ async function scan() {
     await openActivityListFromHome(page);
     const loginRequired = /login|signin|passport/i.test(page.url());
     if (loginRequired) throw Object.assign(new Error('登录态已失效，请运行 npm run login 重新登录。'), { authRequired: true });
+    // 数据层的登录检测：站点在登录失效时**不会**跳转登录页 —— 页面照旧停在
+    // my-score 上、HTML 照样返回 200，只有接口静默返回 401
+    // {"errorcode":10005,"errormsg":"您没有登陆"}。所以上面那个"URL 里有没有
+    // login"的判断根本抓不到，程序会误报"扫描成功"，还把上一次的旧积分当正常值
+    // 显示（用户会以为数据是最新的）。实测这个误判让排查绕了好几轮。
+    //
+    // 判据用站点自己的错误码，而不是"有没有 401"：活动列表是公开接口，
+    // 未登录也能 200，而 user/manager 与 train_statistics 必须登录。
+    // 只有明确出现 10005 / "您没有登陆" 才判定失效，避免把偶发 401 误报成登录过期。
+    const authFailure = (scoreNav.apiCalls || []).find((call) => (
+      call.status === 401
+      && (Number(call.payload && call.payload.errorcode) === 10005
+        || /没有登[录陆]|未登录/.test(String(call.body || '') + String(call.payload && call.payload.errormsg || '')))
+    ));
+    if (authFailure) {
+      trace(`[登录] 检测到登录已失效（接口 ${authFailure.status}）：${String(authFailure.payload && authFailure.payload.errormsg || authFailure.body || '').slice(0, 60)}`);
+      throw Object.assign(new Error('登录态已失效，请运行 npm run login 重新登录。'), { authRequired: true });
+    }
     const data = await extractState(page);
     // 空列表也是有效的扫描结果：页面当前可能没有开放报名的活动。
     // 不要用示例数据填充，也不要把“没有活动”误报成后台错误。

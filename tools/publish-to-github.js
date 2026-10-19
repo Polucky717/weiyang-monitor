@@ -31,6 +31,7 @@ const FILES = [
   'package-lock.json',
   'run-monitor.cmd',
   'restart-monitor.cmd',
+  'relogin-monitor.cmd',
   'start-autostart.vbs',
   'start-autostart.cmd',
   'scripts/run-monitor.cmd',
@@ -59,6 +60,7 @@ const FILES = [
   'tools/install-autostart.js',
   'tools/publish-to-github.js',
   'tools/restart-and-verify.ps1',
+  'tools/relogin-and-verify.ps1',
 
   // 运行脚本（PowerShell / cmd）
   'scripts/ensure-node.ps1',
