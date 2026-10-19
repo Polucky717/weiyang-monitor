@@ -1081,6 +1081,44 @@ async function openScorePageAndCapture(page) {
           out.authTries[label] = 'ERR';
         }
       }
+
+      // 决定性对照：同时测三个接口，看"要登录"的边界在哪。
+      //   user/manager/  —— 返回用户信息（含姓名），必然需要登录
+      //   train_statistics —— 板块积分，当前 401
+      //   all_trainclass_list —— 活动列表，当前 200
+      // 若 user/manager 也 401 而活动列表 200，就说明**活动列表是公开数据、
+      // 根本不需要登录**，于是"活动接口能通"完全不能证明会话有效 ——
+      // 结论只能是登录已失效。反过来若 user/manager 是 200，则问题局部在积分接口。
+      out.endpointCompare = {};
+      const compare = {
+        'user-manager': 'https://weiyang.yuketang.cn/train_platform/v1/user/manager/?term=latest',
+        'train-statistics': stats,
+        'activity-list': acts
+      };
+      for (const [label, url] of Object.entries(compare)) {
+        try {
+          const res = await fetch(url, { credentials: 'include', cache: 'no-store', headers: base });
+          const text = await res.text();
+          let who = '';
+          try {
+            const v = JSON.parse(text);
+            // 只在响应里找"姓名"这类登录痕迹，避免把整块数据打出来
+            const flat = JSON.stringify(v).slice(0, 300);
+            who = flat;
+          } catch { who = text.slice(0, 120); }
+          out.endpointCompare[label] = { status: res.status, len: text.length, head: who.slice(0, 200) };
+        } catch (error) {
+          out.endpointCompare[label] = { error: String(error && error.message || error).slice(0, 80) };
+        }
+      }
+
+      // 页面上有没有登录用户的痕迹：如果连姓名都看不到，页面侧也是未登录状态。
+      try {
+        const bodyText = document.body ? document.body.innerText : '';
+        out.pageHasUserName = bodyText.includes('韩弈超');
+        out.pageHasLoginWord = /登录|登陆|扫码/.test(bodyText);
+        out.pageUrl = location.href;
+      } catch { out.pageHasUserName = '读不到'; }
       return out;
     }, { ...headers, _nhd: storageValues.nhd || '', _uuid: storageValues._uuid || '' });
   } catch (error) {
@@ -1317,6 +1355,18 @@ async function scan() {
           }
           if (probe.authTries) {
             trace(`[积分页-诊断] 逐个试鉴权头 ${Object.entries(probe.authTries).map(([k, v]) => `${k}=${v}`).join(' ')}`);
+          }
+          if (probe.endpointCompare) {
+            const rows = Object.entries(probe.endpointCompare)
+              .map(([k, v]) => (v && !v.error ? `${k}=${v.status}(len=${v.len})` : `${k}=错误`))
+              .join(' ');
+            trace(`[积分页-诊断] 接口对照 ${rows}`);
+            // 用户信息接口返回的正文里带姓名，是判断"会话是否有效"最直接的证据。
+            const um = probe.endpointCompare['user-manager'];
+            if (um && um.head) trace(`[积分页-诊断]   user/manager 返回=${JSON.stringify(um.head.slice(0, 150))}`);
+          }
+          if (probe.pageHasUserName !== undefined) {
+            trace(`[积分页-诊断] 页面上有登录用户姓名=${probe.pageHasUserName} 页面出现登录字样=${probe.pageHasLoginWord}`);
           }
           if (scoreNav.cookieDetail) trace(`[积分页-诊断] cookie 明细 ${scoreNav.cookieDetail.join(' ')}`);
         }
