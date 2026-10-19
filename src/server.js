@@ -1259,9 +1259,27 @@ async function extractScoreProgress(page) {
     const SECTION_NAMES = ['先进制造', '能源电力', '资源环境', '信息工业', '多彩未央', '微沙龙讲座', '比赛培训', '学业支持', '健康心理', '实践创新'];
     const rows = [];
     let lastSection = '';
-    for (const tr of document.querySelectorAll('tbody tr, .el-table__row, [class*=row]')) {
+    // 站点自己写的"总计/合计"值（页面上有的话）。用来对照逐行累加的结果。
+    let explicitRowsTotal = null;
+    // 只认 <tr>，并且**按元素去重**。
+    //
+    // 为什么必须去重：原来的选择器是 'tbody tr, .el-table__row, [class*=row]'。
+    // 一个 <tr class="el-table__row"> 会同时命中全部三个分支，而
+    // querySelectorAll 对同一元素命中多个分支时会**重复返回**它 ——
+    // 实测 18 个 tr 被解析成 19 行、每条活动名都出现两次。
+    //
+    // 这个重复不只是"看着乱"：下面的板块积分是逐行**累加**的（current += row.current），
+    // 所以重复行会把分数算成两倍。这是必须堵死的正确性问题。
+    const rowElements = [...new Set(document.querySelectorAll('tr, .el-table__row'))];
+    const seenRowData = new Set();
+    for (const tr of rowElements) {
+      // 表头行不是数据：Element UI 的表头也可能是 .el-table__row，
+      // 而且它的单元格里带"序号/活动名称/活动课程积分"等列名，会被当成活动名。
+      if (tr.closest('.el-table__header-wrapper') || tr.querySelector('th')) continue;
       const text = clean(tr.textContent);
       if (!text || !/\d+(?:\.\d+)?\s*\/\s*\d+(?:\.\d+)?/.test(text)) continue;
+      // 整行文字里出现列名 = 表头行或表头混进了行文本，一律不要
+      if (/序号|活动名称|所属部门|活动时间|活动课程积分|类型名称/.test(text)) continue;
       // 板块名：先看行内元素，再退回整行文本里的关键词
       let section = clean(tr.querySelector('[class*=section], [class*=module], [class*=tag], [class*=cate]')?.textContent);
       if (!SECTION_NAMES.includes(section)) {
@@ -1281,6 +1299,13 @@ async function extractScoreProgress(page) {
       lastSection = section;
       const match = text.match(/(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)/);
       if (!match) continue;
+      const current = Number(match[1]);
+      const maximum = Number(match[2]);
+      // 同一行被多个选择器命中时内容完全一样，用"板块+分数+文字"再挡一道。
+      // 元素去重已经能解决重复返回，这里是防止同一行同时是 tr 又嵌套了 tr 的情况。
+      const rowKey = `${section}|${current}/${maximum}|${text}`;
+      if (seenRowData.has(rowKey)) continue;
+      seenRowData.add(rowKey);
       // 另外把"活动名称"单独取出来。
       //
       // 为什么不能用整行 text 当活动名：行的选择器里有 `[class*=row]`，它会命中
@@ -1290,7 +1315,8 @@ async function extractScoreProgress(page) {
       //
       // 取法：优先按单元格位置猜（活动名称在"类型"之后那一列），拿不到就退回到
       // "行文本里除去板块名和日期后、最长的那一段"—— 活动名通常是最长的。
-      const cells = [...tr.querySelectorAll('td, [class*=cell]')]
+      // 单元格也要去重：td 和 [class*=cell] 会命中同一个元素。
+      const cells = [...new Set(tr.querySelectorAll('td, [class*=cell]'))]
         .map((node) => clean(node.textContent)).filter(Boolean);
       let rowTitle = '';
       const dateLike = (value) => /\d{4}-\d{2}-\d{2}/.test(value);
@@ -1316,7 +1342,15 @@ async function extractScoreProgress(page) {
           .filter(Boolean)
           .sort((a, b) => b.length - a.length)[0] || '';
       }
-      rows.push({ section, current: Number(match[1]), maximum: Number(match[2]), text: text.slice(0, 80), title: rowTitle.slice(0, 60), cellCount: cells.length, cells: cells.slice(0, 8) });
+      // "总计/合计"行要单独记下来：它是站点自己给出的权威合计值。
+      // 板块积分是**逐行累加**算出来的，一旦行解析多算或漏算，累加值就错了
+      // 但我们看不出来 —— 有了站点自己的合计就能直接对照，错了一眼可见。
+      // 注意它绝不能当普通行参与累加，否则会重复计算。
+      if (/总计|合计|小计/.test(text)) {
+        if (explicitRowsTotal === null) explicitRowsTotal = current;
+        continue;
+      }
+      rows.push({ section, current, maximum, text: text.slice(0, 80), title: rowTitle.slice(0, 60), cellCount: cells.length, cells: cells.slice(0, 8) });
     }
     const pageText = clean(document.body && document.body.innerText || '').slice(0, 6000);
     const totalMatch = pageText.match(/(?:获得|累计|共)\s*(\d+(?:\.\d+)?)\s*(?:个)?\s*积分/);
@@ -1324,13 +1358,15 @@ async function extractScoreProgress(page) {
     // 为什么需要：板块积分是"逐行累加"得来的，所以必须先确认页面上的明细行
     // **全都被读到了**。如果表格分页（只渲染第一页），累加值就会比真实值小，
     // 而界面上看不出任何异常 —— 必须显式核对行数。
-    const seen = new Set();
+    // 独立重数一遍"看起来像数据行的 <tr>"，用来和真正解析出的行数对照。
+    // 必须排除表头，否则它会被算成一行，差额永远对不上、这个核对就失去意义。
     let candidateRows = 0;
-    for (const tr of document.querySelectorAll('tbody tr, .el-table__row, [class*=row]')) {
-      if (seen.has(tr)) continue;
-      seen.add(tr);
+    for (const tr of new Set(document.querySelectorAll('tr, .el-table__row'))) {
+      if (tr.closest('.el-table__header-wrapper') || tr.querySelector('th')) continue;
       const t = clean(tr.textContent);
-      if (t && /\d+(?:\.\d+)?\s*\/\s*\d+(?:\.\d+)?/.test(t)) candidateRows += 1;
+      if (!t || !/\d+(?:\.\d+)?\s*\/\s*\d+(?:\.\d+)?/.test(t)) continue;
+      if (/序号|活动名称|所属部门|活动时间|活动课程积分|类型名称/.test(t)) continue;
+      candidateRows += 1;
     }
     const tableInfo = {
       parsedRows: rows.length,
@@ -1355,6 +1391,7 @@ async function extractScoreProgress(page) {
     return {
       rows,
       tableInfo,
+      rowsTotal: explicitRowsTotal,
       totalPoints: totalMatch ? Number(totalMatch[1]) : null,
       totalRead: Boolean(totalMatch),
       scraped,
@@ -1386,6 +1423,8 @@ async function extractScoreProgress(page) {
     firstRowCells: (result.rows || [])[0]?.cells || [],
     totalPoints: Number.isFinite(result.totalPoints) ? result.totalPoints : null,
     totalRead: Boolean(result.totalRead),
+    // 站点自己给出的明细合计（"总计"行）。null 表示页面上没有这一行。
+    rowsTotal: Number.isFinite(result.rowsTotal) ? result.rowsTotal : null,
     tableInfo: result.tableInfo || null,
     scraped: Boolean(result.scraped),
     diagnostics: result.diagnostics || null,
@@ -1632,6 +1671,13 @@ async function scan() {
       if (t.candidateRows !== t.parsedRows) {
         trace(`[积分页] 注意：命中 ${t.candidateRows} 行但只解析出 ${t.parsedRows} 行，差额需检查选板块逻辑。`);
       }
+    }
+    // 用站点自己的"总计"核对逐行累加的结果。
+    // 这是唯一能发现"行解析多算/漏算"的办法：累加值偏大或偏小，
+    // 界面上都看不出异常，只有和站点给的合计对照才能发现。
+    if (Number.isFinite(scoreData.rowsTotal)) {
+      const diff = scoreData.rowsTotal - pointsSum;
+      trace(`[积分页] 站点明细合计=${scoreData.rowsTotal} 逐行累加=${pointsSum} 差额=${diff}${diff === 0 ? ' ✓ 一致' : ' ← 不一致，需排查'}`);
     }
     // 活动名要做一次校验后再用：脏数据会把个人卡片撑爆（实测）。
     // 优先用积分页首行取到的活动名（那才是"最近获得积分的那次活动"），
