@@ -91,6 +91,9 @@ function skipInterpolation(src, from, blank) {
     if (c === '"' || c === "'") {
       let k = j + 1;
       while (k < src.length) { if (src[k] === '\\') { k += 2; continue; } if (src[k] === c) break; k += 1; }
+      // 表达式里的字符串内容也要抹掉：`${c.httpOnly ? 'y' : 'n'}` 里若留着
+      // 'y' / 'n'，它们会被当成裸标识符报出来。这是个真踩到的老坑。
+      wipe(j, Math.min(k + 1, src.length));
       j = k + 1;
       continue;
     }
@@ -118,8 +121,7 @@ function skipInterpolation(src, from, blank) {
       // 没闭合就当普通字符处理，别把后面全吃掉
       j += 1;
       continue;
-    }
-    if (c === '`') {
+    }    if (c === '`') {
       // 嵌套模板串：找到它的收尾反引号，途中遇到 ${ 就递归跳过那层插值。
       // 嵌套模板的**静态文本也要抹掉**，否则会留下 `y`（来自 `` `y${a}` ``）
       // 这种假标识符。
@@ -301,18 +303,31 @@ function findUndeclared(rawSrc) {
   const src = String(rawSrc).replace(/\r\n?/g, '\n');
   const code = stripLiterals(src);
   const declared = collectDeclared(code);
-  // 把反斜杠转义整体抹掉再扫标识符：`\d+`、`\s*`、`\n` 里的 d/s/n 会被
-  // 当成裸标识符，产生稳定的假报（例如 /(\d+)\s*\/\s*(\d+)/ 报出 d 和 s）。
-  const lines = code.split('\n').map((line) => line.replace(/\\[\s\S]/g, '  '));
 
   // 收集所有“裸引用”（排除 .prop 这种属性名）
+  //
+  // 顺序很重要：必须**先**抹掉 `.属性`，**再**抹掉反斜杠转义。
+  // 反过来的话，`\.` 会被替换成两个空格，"点"就没了，于是 `cookie.httpOnly`
+  // 里的 `httpOnly` 被当成裸标识符报出来（实测报过）。而抹掉 `.属性` 依赖于
+  // "点还在"，所以这两步的先后不能颠倒。
   const refs = new Map();
-  for (let ln = 0; ln < lines.length; ln += 1) {
-    const withoutProps = lines[ln].replace(/\.\s*[A-Za-z_$][\w$]*/g, (m) => ' '.repeat(m.length));
-    for (const m of withoutProps.matchAll(/(^|[^\w$])([A-Za-z_$][\w$]*)/g)) {
+  for (let ln = 0; ln < code.split('\n').length; ln += 1) {
+    const raw = code.split('\n')[ln];
+    // 1) 先去掉 .属性
+    const withoutProps = raw.replace(/\.\s*[A-Za-z_$][\w$]*/g, (m) => ' '.repeat(m.length));
+    // 2) 再抹掉反斜杠转义：`\d+`、`\s*`、`\n` 里的 d/s/n 会被当成裸标识符
+    //    （例如 /(\d+)\s*\/\s*(\d+)/ 会报出 d 和 s）
+    const line = withoutProps.replace(/\\[\s\S]/g, '  ');
+    for (const m of line.matchAll(/(^|[^\w$])([A-Za-z_$][\w$]*)/g)) {
       const name = m[2];
       // 对象字面量的键名：后面紧跟冒号、再后面不是另一个冒号（排除 ?: 与 label）
-      const after = withoutProps.slice(m.index + m[1].length + name.length);
+      //
+      // 偏移必须算全：m[1] 是前导字符，名字本身占 name.length 个字符。
+      // 早先这里写成 m.index + m[1].length，少算了一个名字的长度，于是 `after`
+      // 取到的是名字的尾部残留（例如 `cookie.httpOnly ?` 会得到 "t ?"）而不是
+      // " ?"，字符串内容那层过滤因此失效，属性名被当成裸标识符报出来 ——
+      // 实测 `c.httpOnly` 里的 httpOnly 就是这么被误报的。
+      const after = line.slice(m.index + m[1].length + name.length);
       if (/^\s*:(?!:)/.test(after)) continue;
       if (!refs.has(name)) refs.set(name, []);
       refs.get(name).push(ln + 1);

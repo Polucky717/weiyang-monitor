@@ -53,6 +53,7 @@ const FILES = [
   'tools/publish-to-github.js',
   'tools/restart-and-verify.ps1',
   'tools/relogin-and-verify.ps1',
+  'tools/test-check-scope.js',
 
   // 运行脚本（PowerShell / cmd）
   'scripts/ensure-node.ps1',

@@ -34,6 +34,9 @@ let browserContext;
 let browserConnection;
 let connectedToExternalEdge = false;
 let monitorPage;
+// 实际启动的浏览器标识（Edge / Chromium）。登录与扫描必须是同一个浏览器，
+// 否则 Windows 下 cookie 解不开、登录态读不出来 —— 这个值要写进日志。
+let activeBrowserLabel = '';
 let scanRunning = false;
 let notificationTestRunning = false;
 
@@ -396,15 +399,31 @@ async function ensureContext(headless = true) {
     args: headless ? [] : ['--start-maximized']
   };
   const launchAttempts = [];
-  if (!headless && process.platform === 'win32') {
+  // 始终优先用 Edge，**不分有无界面**。
+  //
+  // 这里踩过一个代价很大的坑：原先只在 `!headless`（有界面）时才优先 Edge，
+  // 于是"登录用 Edge、扫描用 Playwright 自带 Chromium"。
+  // 而 Windows 上 cookie 是用 DPAPI 加密的，密钥存在各浏览器**自己的**
+  // Local State 里 —— Edge 写的登录 cookie，Chromium 读不出来，会被静默丢弃。
+  // 表现就是：明明在浏览器里登录成功了，扫描仍然一直返回
+  // {"errorcode":10005,"errormsg":"您没有登陆"}，而持久化的 csrftoken 却能读到
+  // （它是 Chromium 自己在运行中写的）。
+  //
+  // 证据：配置目录里的 "Last Version" 是 155.0.4283.62（Edge 的版本号），
+  // 说明这个 profile 是 Edge 建的；而扫描进程启动的是 Chromium 1243。
+  // 同一个 profile 被两种浏览器交替使用，登录态不可能稳定。
+  if (process.platform === 'win32') {
     const edgeCandidates = [
-      process.env.PROGRAMFILES && path.join(process.env.PROGRAMFILES, 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
-      process.env['ProgramFiles(x86)'] && path.join(process.env['ProgramFiles(x86)'], 'Microsoft', 'Edge', 'Application', 'msedge.exe')
+      process.env['ProgramFiles(x86)'] && path.join(process.env['ProgramFiles(x86)'], 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+      process.env.PROGRAMFILES && path.join(process.env.PROGRAMFILES, 'Microsoft', 'Edge', 'Application', 'msedge.exe')
     ].filter(Boolean);
     const edgePath = edgeCandidates.find((candidate) => fs.existsSync(candidate));
     if (edgePath) launchAttempts.push({ ...commonOptions, executablePath: edgePath });
     launchAttempts.push({ ...commonOptions, channel: 'msedge' });
   }
+  // 兜底：没装 Edge 时才用自带 Chromium。
+  // 注意这会导致"登录/扫描不同浏览器"的老问题，所以放在最后，
+  // 并在真的用到时留下痕迹，方便下次直接看出原因。
   launchAttempts.push({ ...commonOptions });
 
   let lastLaunchError;
@@ -412,6 +431,11 @@ async function ensureContext(headless = true) {
     for (const options of launchAttempts) {
       try {
         browserContext = await chromium.launchPersistentContext(profileDir, options);
+        // 记下实际用的是哪个浏览器：登录与扫描必须是同一个，
+        // 否则 cookie 加密密钥不同，登录态读不出来（详见上面的注释）。
+        activeBrowserLabel = options.executablePath
+          ? `Edge(${path.basename(options.executablePath)})`
+          : (options.channel ? `channel:${options.channel}` : 'Playwright自带Chromium');
         break;
       } catch (error) {
         lastLaunchError = error;
@@ -988,6 +1012,17 @@ async function openScorePageAndCapture(page) {
   const cookies = await page.context().cookies(SCORE_URL).catch(() => []);
   const cookieNames = cookies.map((cookie) => cookie.name).sort();
   const cookieValue = (name) => cookies.find((cookie) => cookie.name === name)?.value || '';
+  // 全量 cookie（不限域）。
+  // 之前只查 weiyang.yuketang.cn，看到 5 个非会话 cookie 就以为"没有会话 cookie"，
+  // 但登录 cookie 很可能挂在别的域上（.yuketang.cn、changjiang.yuketang.cn、
+  // passport 等）。不把全部域列出来，"登录态到底存不存在"这个判断就不成立。
+  const allCookies = await page.context().cookies().catch(() => []);
+  const cookieDomains = [...new Set(allCookies.map((cookie) => cookie.domain))].sort();
+  const cookieBrief = allCookies.map((cookie) => (
+    `${cookie.domain}|${cookie.name}${cookie.expires && cookie.expires > 0
+      ? '@' + new Date(cookie.expires * 1000).toISOString().slice(0, 10)
+      : '@会话'}${cookie.httpOnly ? '|httpOnly' : ''}`
+  ));
   const headers = {
     'x-csrftoken': cookieValue('csrftoken'),
     'terminal-type': 'web',
@@ -1045,6 +1080,35 @@ async function openScorePageAndCapture(page) {
           try { const v = localStorage.getItem(key); if (v) picked[key] = v.slice(0, 60); } catch { /* 忽略 */ }
         }
         out.storageValues = picked;
+        // 整份 localStorage 的规模与逐个键的值（截断）。
+        // 为什么全都要：cookie 里只有 csrftoken（持久化）和三个平台标识，
+        // **没有任何登录会话 cookie**，所以登录凭据只可能在 localStorage 里。
+        // 之前只看了 4 个键，而 vuex 明显是持久化的前端状态，里面很可能就有
+        // 用户信息 —— 只有把它整份看清，才能判断"登录到底有没有被保存下来"。
+        try {
+          const all = {};
+          for (let i = 0; i < localStorage.length; i += 1) {
+            const key = localStorage.key(i);
+            if (key === null) continue;
+            const value = localStorage.getItem(key) || '';
+            all[key] = value.length > 200 ? value.slice(0, 200) + '…(共' + value.length + '字)' : value;
+          }
+          out.storageAll = all;
+          out.storageTotal = localStorage.length;
+        } catch { out.storageAll = { error: '读不到' }; }
+        // 会话存储（sessionStorage）：有些前端把 token 放这里，它随标签页关闭而清空
+        // —— 如果登录状态在这里，那"关掉浏览器就掉登录"就完全解释得通。
+        try {
+          const ss = {};
+          for (let i = 0; i < sessionStorage.length; i += 1) {
+            const key = sessionStorage.key(i);
+            if (key === null) continue;
+            const value = sessionStorage.getItem(key) || '';
+            ss[key] = value.length > 160 ? value.slice(0, 160) + '…' : value;
+          }
+          out.sessionAll = ss;
+          out.sessionTotal = sessionStorage.length;
+        } catch { out.sessionAll = { error: '读不到' }; }
       } catch { out.storageKeys = '(读不到)'; }
 
       // 逐个试候选鉴权头：实测补上活动接口那套头仍是 401，而站点明确回
@@ -1134,7 +1198,7 @@ async function openScorePageAndCapture(page) {
     return `${cookie.name}(过期=${exp}${cookie.session ? '' : ''})`;
   });
 
-  return { apiCalls, attempts: tried.join(' '), cookieNames, cookieDetail, statsProbe };
+  return { apiCalls, attempts: tried.join(' '), cookieNames, cookieDetail, cookieDomains, cookieBrief, statsProbe };
 }
 
 // 从接口响应里找积分数据。
@@ -1409,6 +1473,9 @@ async function scan() {
       trace(`[积分页-诊断] 根容器=${diag?.hasMyScore} 表格容器=${diag?.hasTable} 原始行数=${diag?.rawRowCount} 标题=${JSON.stringify(diag?.title)} 表头=[${(diag?.headings || []).join(' | ')}]`);
       trace(`[积分页-诊断] 页面开头=${JSON.stringify((diag?.textStart || '').slice(0, 120))}`);
       trace(`[积分页-诊断] cookie=[${(scoreNav.cookieNames || []).join(',')}]`);
+      trace(`[积分页-诊断] 全部 cookie 域=[${(scoreNav.cookieDomains || []).join(', ')}]（共 ${(scoreNav.cookieBrief || []).length} 个）`);
+      trace(`[积分页-诊断] 本次扫描用的浏览器=${activeBrowserLabel || '未记录'}`);
+      for (const brief of (scoreNav.cookieBrief || []).slice(0, 20)) trace(`[积分页-诊断]   cookie ${brief}`);
       for (const call of scoreNav.apiCalls.slice(0, 12)) {
         trace(`[积分页-诊断] 接口 ${call.status} ${call.url.slice(0, 120)}`);
         // 失败响应必须打出正文：它写明原因（未登录 / 缺头 / 无权限），
@@ -1429,6 +1496,19 @@ async function scan() {
             trace(`[积分页-诊断]   统计接口返回正文=${JSON.stringify(probe.statsHeaders.head.slice(0, 160))}`);
           }
           if (probe.storageKeys) trace(`[积分页-诊断] localStorage keys=[${probe.storageKeys}]`);
+          if (probe.storageAll) {
+            trace(`[积分页-诊断] localStorage 共 ${probe.storageTotal} 项：`);
+            for (const [key, value] of Object.entries(probe.storageAll)) {
+              trace(`[积分页-诊断]   ${key} = ${JSON.stringify(String(value).slice(0, 160))}`);
+            }
+          }
+          if (probe.sessionAll) {
+            const keys = Object.keys(probe.sessionAll);
+            trace(`[积分页-诊断] sessionStorage 共 ${probe.sessionTotal} 项${keys.length ? '：' : '（空）'}`);
+            for (const [key, value] of Object.entries(probe.sessionAll)) {
+              trace(`[积分页-诊断]   ${key} = ${JSON.stringify(String(value).slice(0, 160))}`);
+            }
+          }
           if (probe.storageValues && Object.keys(probe.storageValues).length) {
             const shown = Object.entries(probe.storageValues).map(([k, v]) => `${k}=${JSON.stringify(String(v).slice(0, 40))}`).join(' ');
             trace(`[积分页-诊断] localStorage 凭据候选 ${shown}`);
