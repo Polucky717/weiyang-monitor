@@ -51,23 +51,180 @@ const BROWSER_GLOBALS = ('document window navigator location localStorage sessio
   'MessageChannel MessagePort atob btoa scrollTo scrollBy matchMedia').split(/\s+/);
 for (const name of BROWSER_GLOBALS) GLOBALS.add(name);
 
+// 判断 src[k] 处的 `/` 是"正则字面量开头"还是"除号"。
+// 规则来自 JS 词法：`/` 前面若是一个"值"（标识符、`)`、`]`、字符串、模板串），
+// 它就是除号；否则（前面是 `(`、`,`、`=`、`:`、`return`、`&&` 之类）是正则开头。
+// 这条判断必须做对：真实源码里有 `/'/g`（正则里含单引号），把它当字符串开头
+// 会让扫描器从此错位 —— 实测导致后面 149 处假报。
+function regexCanStartAt(src, k) {
+  let p = k - 1;
+  while (p >= 0 && /\s/.test(src[p])) p -= 1;
+  if (p < 0) return true;
+  const prev = src[p];
+  if (/[A-Za-z0-9_$)\]}"'`]/.test(prev)) {
+    // 例外：return / typeof / case 这类关键字后面可以跟正则
+    let w = p;
+    while (w >= 0 && /[A-Za-z0-9_$]/.test(src[w])) w -= 1;
+    const word = src.slice(w + 1, p + 1);
+    return /^(return|typeof|instanceof|in|of|new|delete|void|case|do|else|yield|await)$/.test(word);
+  }
+  return true;
+}
+
+// 从模板串插值的表达式内部（即 `{` 之后）开始扫，返回配平的 `}` 之后的索引。
+//
+// 需要跳过这些东西，否则它们里面的花括号会破坏配平：
+//   * 单/双引号字符串（`'}'`、`"{"`）
+//   * 正则字面量（`/'/g`、`/\{/`）—— 里面的引号和花括号都不能算数
+//   * 嵌套模板串（`` `x${a}` ``）—— 它内部又是一层插值，所以递归处理
+//   * 行注释与块注释
+// 只做配平，不关心表达式的语义 —— 目标是"别卡死、别抹错范围"。
+function skipInterpolation(src, from, blank) {
+  const wipe = typeof blank === 'function' ? blank : () => {};
+  let j = from;
+  let brace = 1;              // 已经消费掉 ${ 的那个 `{`
+  while (j < src.length) {
+    const c = src[j];
+    if (c === '\\') { j += 2; continue; }
+    if (c === '/' && src[j + 1] === '/') { const e = src.indexOf('\n', j); j = e === -1 ? src.length : e; continue; }
+    if (c === '/' && src[j + 1] === '*') { const e = src.indexOf('*/', j + 2); j = e === -1 ? src.length : e + 2; continue; }
+    if (c === '"' || c === "'") {
+      let k = j + 1;
+      while (k < src.length) { if (src[k] === '\\') { k += 2; continue; } if (src[k] === c) break; k += 1; }
+      j = k + 1;
+      continue;
+    }
+    if (c === '/' && regexCanStartAt(src, j)) {
+      // 正则字面量：扫到未转义、且不在字符类里的 `/` 为止（含 flag）。
+      let k = j + 1; let inClass = false; let closed = false;
+      while (k < src.length) {
+        const d = src[k];
+        if (d === '\\') { k += 2; continue; }
+        if (d === '\n') break;
+        if (d === '[') inClass = true;
+        else if (d === ']') inClass = false;
+        else if (d === '/' && !inClass) { closed = true; break; }
+        k += 1;
+      }
+      if (closed) {
+        // 把 flag 也纳入范围，然后**真的抹掉**，不能只是跳过 —— 只跳过的话
+        // 正则里的内容会原样留在结果里，`/'/g` 的 `'` 随后被当成字符串开头、
+        // `g` 被当成标识符。实测这里漏了 wipe，导致 2 处假报。
+        while (k + 1 < src.length && /[a-z]/.test(src[k + 1])) k += 1;
+        wipe(j, k + 1);
+        j = k + 1;
+        continue;
+      }
+      // 没闭合就当普通字符处理，别把后面全吃掉
+      j += 1;
+      continue;
+    }
+    if (c === '`') {
+      // 嵌套模板串：找到它的收尾反引号，途中遇到 ${ 就递归跳过那层插值。
+      // 嵌套模板的**静态文本也要抹掉**，否则会留下 `y`（来自 `` `y${a}` ``）
+      // 这种假标识符。
+      let k = j + 1;
+      let textFrom = k;
+      while (k < src.length) {
+        if (src[k] === '\\') { k += 2; continue; }
+        if (src[k] === '`') break;
+        if (src[k] === '$' && src[k + 1] === '{') {
+          wipe(textFrom, k);
+          // 同样把嵌套 ${ 的 $ 抹掉（保留 {），否则它会粘到前面的标识符上
+          // 变成 `y$` 这种假标识符。
+          wipe(k, k + 1);
+          k = skipInterpolation(src, k + 2, wipe);
+          textFrom = k;
+          continue;
+        }
+        k += 1;
+      }
+      wipe(textFrom, Math.min(k, src.length));
+      j = k + 1;
+      continue;
+    }
+    if (c === '{') { brace += 1; j += 1; continue; }
+    if (c === '}') {
+      brace -= 1;
+      j += 1;
+      if (brace === 0) return j;
+      continue;
+    }
+    j += 1;
+  }
+  return j;                   // 没配平：返回末尾，交给调用方保守处理
+}
+
 // 把注释、字符串、模板串、正则字面量替换成空格，保持字符数与行数不变。
+//
+// 重要约定：本循环用 `i` 表示"最后消费掉的字符索引"，而不是"下一个待处理索引"。
+// 因此每个分支结束时必须保证 i 真的前进了 —— 漏掉就会在同一处反复重扫，
+// 表现为**整个工具卡死**（实测：嵌套模板串 `` `x${`y${a}`}z` `` 会死循环，
+// 因为模板分支结束时 i 停在反引号上，下一轮又从同一个反引号进入）。
+// 下面在第 60 行留了一道"强制前进"保险，任何分支忘记推进都不会再卡死。
 function stripLiterals(src) {
   const out = src.split('');
   const blank = (from, to) => { for (let k = from; k < to && k < out.length; k += 1) if (out[k] !== '\n') out[k] = ' '; };
   let i = 0;
   let prev = '';
   while (i < src.length) {
+    const iAtStart = i;            // 保险用：本轮结束若 i 未前进，强制 +1
     const ch = src[i];
     const next = src[i + 1];
     if (ch === '/' && next === '/') { const end = src.indexOf('\n', i); const to = end === -1 ? src.length : end; blank(i, to); i = to; continue; }
     if (ch === '/' && next === '*') { const end = src.indexOf('*/', i + 2); const to = end === -1 ? src.length : end + 2; blank(i, to); i = to; continue; }
-    if (ch === '"' || ch === "'" || ch === '`') {
+    if (ch === '"' || ch === "'") {
       let j = i + 1;
       while (j < src.length) { if (src[j] === '\\') { j += 2; continue; } if (src[j] === ch) break; j += 1; }
       blank(i, j + 1); i = j + 1; prev = ch; continue;
     }
-    if (ch === '/' && !/[A-Za-z0-9_$)\]}"'`]/.test(prev)) {
+    if (ch === '`') {
+      // 模板串要特殊处理：`a${expr}b` 里只有静态文本该被抹掉，${...} 里的
+      // expr 是**真代码**，必须保留下来参与检查 —— 它可能引用未声明的标识符。
+      //
+      // 这段踩过三个坑，全都发生在同一处：
+      //   1) 把整个模板串一路抹到最后一个反引号 → `${` 的 `$` 残留，被报成
+      //      "使用了但未声明的标识符 $"，而 ${...} 里的代码完全没被检查；
+      //   2) 改成"只保留 ${...}"时手滑把 ${...} 本身也抹了 → 假报没了但变成漏报
+      //      （`${b}` 抓不到 b）；
+      //   3) 自己数花括号深度：进入 ${ 时把 j 推到 `{` 上，下一轮又把同一个 `{`
+      //      数一次 → 深度在同一字符上无限递增，**整个工具卡死**；而且嵌套模板
+      //      `` `x${`y${a}`}z` `` 里内层的收尾反引号会被误当成外层结束符。
+      // 结论：不要手写深度计数，用"跳过字符串与嵌套模板 + 配平花括号"的扫描。
+      // 静态文本用 blank() 抹掉，${ 与 } 原样保留，表达式内容完全不碰。
+      let j = i + 1;              // 指向模板文本起点
+      let textStart = j;
+      while (j < src.length) {
+        if (src[j] === '\\') { j += 2; continue; }
+        if (src[j] === '`') break;                       // 模板结束
+        if (src[j] !== '$' || src[j + 1] !== '{') { j += 1; continue; }
+        // 命中 ${ ：抹掉它之前的静态文本，再用配平扫描跳过整个表达式
+        blank(textStart, j);
+        // 把 $ 也抹成空格、但保留 { —— 不能留着 $：它紧跟在标识符后面会被
+        // 吸进同一个令牌（`x${a}` 被扫成 `x$`），还会让后面对齐整体错位，
+        // 连带把正则 flag、字符串内容误报成未声明标识符。
+        blank(j, j + 1);
+        j = skipInterpolation(src, j + 2, blank);
+        textStart = j;                                   // 表达式之后是新的静态文本
+      }
+      if (j >= src.length) {
+        // 模板串没有收尾的反引号：保守地把剩下部分整体抹掉。
+        // 宁可漏报也不制造假警报。
+        blank(textStart, src.length);
+        i = src.length;
+        continue;
+      }
+      blank(textStart, j);        // 结尾那段静态文本
+      blank(j, j + 1);            // 收尾反引号本身
+      i = j + 1;
+      prev = '`';
+      continue;
+    }
+    // 正则字面量的判定，统一走 regexCanStartAt（基于**原始源码**的前一个有效字符）。
+    // 旧实现用 prev 变量，而 prev 来自已被抹白的输出，判断不可靠：实测行 264 的
+    // `/'/g` 没被识别成正则，里面的 `'` 被当成字符串开头，扫描器随后整体错位，
+    // 导致后面 149 处假报。
+    if (ch === '/' && regexCanStartAt(src, i)) {
       let j = i + 1; let inClass = false; let closed = false;
       while (j < src.length) {
         const c = src[j];
@@ -89,7 +246,11 @@ function stripLiterals(src) {
       }
     }
     if (!/\s/.test(ch)) prev = ch;
-    i += 1;
+    // 强制前进：正常路径下各分支已经把 i 推到下一处，但只要有分支忘了推进
+    // （模板串分支就踩过这个坑），这里兜住，避免整个工具死循环。
+    // 注意必须用本轮开头记下的 iAtStart 比较 —— 早先这里写成比较外层的变量，
+    // 护栏本身就失效了。
+    if (i <= iAtStart) i = iAtStart + 1;
   }
   return out.join('');
 }
@@ -121,6 +282,12 @@ function collectDeclared(code) {
   }
   for (const m of code.matchAll(/(?:^|[^\w$.])([A-Za-z_$][\w$]*)\s*=>/g)) add(m[1]);
   for (const m of code.matchAll(/\bcatch\s*\(\s*([A-Za-z_$][\w$]*)/g)) add(m[1]);
+  // for...of / for...in 的循环变量，含解构形式：
+  //   for (const x of list)          → 旧写法已覆盖
+  //   for (const [a, b] of entries)  → 必须单独处理，否则 a/b 会被当成未声明
+  for (const m of code.matchAll(/\bfor\s*\(\s*(?:const|let|var)?\s*\[([^\]]*)\]\s*(?:of|in)\b/g)) {
+    for (const id of m[1].matchAll(ID)) add(id[0]);
+  }
   for (const m of code.matchAll(/\bfor\s*\(\s*(?:const|let|var)?\s*([A-Za-z_$][\w$]*)\s+(?:of|in)\b/g)) add(m[1]);
   return declared;
 }
@@ -155,6 +322,9 @@ function findUndeclared(rawSrc) {
   const problems = [];
   for (const [name, where] of refs) {
     if (declared.has(name) || GLOBALS.has(name)) continue;
+    // 单独的 `$` 不是标识符引用：它出现在模板串插值 `${...}` 的开头，
+    // 或正则里作为行尾锚点。把它当"未声明标识符"是纯噪音 —— 实测报过。
+    if (name === '$') continue;
     if (/^[A-Z][A-Z0-9_]*$/.test(name)) continue; // 全大写常量视为外部/约定
     problems.push({ name, lines: [...new Set(where)].slice(0, 4) });
   }

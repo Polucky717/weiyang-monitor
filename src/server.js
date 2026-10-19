@@ -999,6 +999,19 @@ async function openScorePageAndCapture(page) {
   };
 
   let statsProbe = null;
+  // 先把 localStorage 里的可疑凭据读出来，再传进下面的探针。
+  // 站点把 token 藏在前端存储里（cookie 只有 csrftoken/xtbz/university_id 这类
+  // 平台标识），所以候选鉴权头的内容只能从这里取。
+  const storageValues = await page.evaluate(() => {
+    const out = {};
+    try {
+      for (const key of ['nhd', '_uuid', 'runtime_xtbz']) {
+        const value = localStorage.getItem(key);
+        if (value) out[key] = value;
+      }
+    } catch { /* 读不到就算了 */ }
+    return out;
+  }).catch(() => ({}));
   try {
     statsProbe = await page.evaluate(async (h) => {
       const out = {};
@@ -1025,14 +1038,65 @@ async function openScorePageAndCapture(page) {
       // 站点前端可能把 uv_id / 学校信息放在 localStorage 里，统计接口或许只认那个。
       try {
         out.storageKeys = Object.keys(localStorage).slice(0, 20).join(',');
+        // 把可疑的鉴权值也 dump 出来（nhd / _uuid / vuex 很可能就是 token 来源）。
+        // 只取前 60 字符，够判断格式，不整段复制。
+        const picked = {};
+        for (const key of ['nhd', '_uuid', 'vuex', 'runtime_xtbz']) {
+          try { const v = localStorage.getItem(key); if (v) picked[key] = v.slice(0, 60); } catch { /* 忽略 */ }
+        }
+        out.storageValues = picked;
       } catch { out.storageKeys = '(读不到)'; }
+
+      // 逐个试候选鉴权头：实测补上活动接口那套头仍是 401，而站点明确回
+      // "您没有登陆"（errorcode 10005）。所以要枚举其它常见位置，确认到底
+      // 缺的是哪个头 —— 是"补头能解决"还是"必须重新登录"，结论完全不同。
+      //
+      // 注意 nhd / _uuid 来自 localStorage（由调用方先读出来传进来），不是 cookie：
+      // 整个 cookie 清单里只有 csrftoken / platform_id / platform_type /
+      // university_id / xtbz 五项，没有会话 cookie，所以站点要的凭据大概在
+      // localStorage 里，由前端拦截器动态加到请求上。
+      const base = {
+        'x-csrftoken': h['x-csrftoken'], xtbz: h.xtbz, 'terminal-type': 'web',
+        'university-id': h['university-id'], 'platform-id': h['platform-id'],
+        'x-client': 'web', accept: 'application/json, text/plain, */*'
+      };
+      const candidates = {
+        'plain': {},
+        'x-requested-with': { 'x-requested-with': 'XMLHttpRequest' },
+        'authorization': { authorization: `Bearer ${h._nhd || ''}` },
+        'x-token': { 'x-token': h._nhd || '' },
+        'uv-id': { 'uv-id': h.uvId || '2993' },
+        'user-id': { 'user-id': h._uuid || '' },
+        'referer': { referer: 'https://weiyang.yuketang.cn/pro/trainingproject/my-score' },
+        'cookie-xtbz': { 'X-Training-Biz': h.xtbz || '' }
+      };
+      out.authTries = {};
+      for (const [label, extra] of Object.entries(candidates)) {
+        const merged = { ...base, ...extra };
+        if (!extra.referer) delete merged.referer;
+        try {
+          const res = await fetch(stats, { credentials: 'include', cache: 'no-store', headers: merged });
+          out.authTries[label] = res.status;
+        } catch (error) {
+          out.authTries[label] = 'ERR';
+        }
+      }
       return out;
-    }, headers);
+    }, { ...headers, _nhd: storageValues.nhd || '', _uuid: storageValues._uuid || '' });
   } catch (error) {
     statsProbe = { error: String(error && error.message || error).slice(0, 120) };
   }
 
-  return { apiCalls, attempts: tried.join(' '), cookieNames, statsProbe };
+  // cookie 清单连同过期时间一起记录：如果会话 cookie 已过期，任何请求头都救不了，
+  // 必须让用户重新登录 —— 这个判断决定了下一步给用户的指令，不能靠猜。
+  const cookieDetail = cookies.map((cookie) => {
+    const exp = cookie.expires && cookie.expires > 0
+      ? new Date(cookie.expires * 1000).toISOString().slice(0, 16)
+      : '会话级';
+    return `${cookie.name}(过期=${exp}${cookie.session ? '' : ''})`;
+  });
+
+  return { apiCalls, attempts: tried.join(' '), cookieNames, cookieDetail, statsProbe };
 }
 
 // 从接口响应里找积分数据。
@@ -1247,6 +1311,14 @@ async function scan() {
             trace(`[积分页-诊断]   统计接口返回正文=${JSON.stringify(probe.statsHeaders.head.slice(0, 160))}`);
           }
           if (probe.storageKeys) trace(`[积分页-诊断] localStorage keys=[${probe.storageKeys}]`);
+          if (probe.storageValues && Object.keys(probe.storageValues).length) {
+            const shown = Object.entries(probe.storageValues).map(([k, v]) => `${k}=${JSON.stringify(String(v).slice(0, 40))}`).join(' ');
+            trace(`[积分页-诊断] localStorage 凭据候选 ${shown}`);
+          }
+          if (probe.authTries) {
+            trace(`[积分页-诊断] 逐个试鉴权头 ${Object.entries(probe.authTries).map(([k, v]) => `${k}=${v}`).join(' ')}`);
+          }
+          if (scoreNav.cookieDetail) trace(`[积分页-诊断] cookie 明细 ${scoreNav.cookieDetail.join(' ')}`);
         }
       }
     }
