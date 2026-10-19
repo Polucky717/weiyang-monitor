@@ -1217,10 +1217,67 @@ async function extractScoreProgress(page) {
       lastSection = section;
       const match = text.match(/(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)/);
       if (!match) continue;
-      rows.push({ section, current: Number(match[1]), maximum: Number(match[2]), text: text.slice(0, 80) });
+      // 另外把"活动名称"单独取出来。
+      //
+      // 为什么不能用整行 text 当活动名：行的选择器里有 `[class*=row]`，它会命中
+      // **包含整张表的外层容器**，那个元素的 textContent 是表头加所有行拼在一起
+      // 的一大段（实测拿到的是"序号类型名称活动名称所属部门…1多彩未央软件工程…"）。
+      // 之前 recentActivity 直接取 rows[0].text，界面上那段超长文字就是这么来的。
+      //
+      // 取法：优先按单元格位置猜（活动名称在"类型"之后那一列），拿不到就退回到
+      // "行文本里除去板块名和日期后、最长的那一段"—— 活动名通常是最长的。
+      const cells = [...tr.querySelectorAll('td, [class*=cell]')]
+        .map((node) => clean(node.textContent)).filter(Boolean);
+      let rowTitle = '';
+      const dateLike = (value) => /\d{4}-\d{2}-\d{2}/.test(value);
+      if (cells.length >= 3) {
+        const byPosition = cells.find((value, index) => (
+          index > 0 && !dateLike(value) && value !== section && value.length >= 4
+        ));
+        if (byPosition) rowTitle = byPosition;
+        if (!rowTitle) {
+          const longest = cells.filter((value) => !dateLike(value) && value !== section)
+            .sort((a, b) => b.length - a.length)[0];
+          rowTitle = longest || '';
+        }
+      }
+      if (!rowTitle) {
+        // 退化路径：整行文本里去掉板块名、日期时间、积分数字，取最长的一段。
+        rowTitle = text
+          .replace(new RegExp(section, 'g'), ' ')
+          .replace(/\d{4}-\d{2}-\d{2}[^\u4e00-\u9fff]*/g, ' ')
+          .replace(/\d+(?:\.\d+)?\s*\/\s*\d+(?:\.\d+)?/g, ' ')
+          .split(/\s{2,}/)
+          .map((part) => part.trim())
+          .filter(Boolean)
+          .sort((a, b) => b.length - a.length)[0] || '';
+      }
+      rows.push({ section, current: Number(match[1]), maximum: Number(match[2]), text: text.slice(0, 80), title: rowTitle.slice(0, 60), cellCount: cells.length, cells: cells.slice(0, 8) });
     }
     const pageText = clean(document.body && document.body.innerText || '').slice(0, 6000);
     const totalMatch = pageText.match(/(?:获得|累计|共)\s*(\d+(?:\.\d+)?)\s*(?:个)?\s*积分/);
+    // 表格规模与分页信息。
+    // 为什么需要：板块积分是"逐行累加"得来的，所以必须先确认页面上的明细行
+    // **全都被读到了**。如果表格分页（只渲染第一页），累加值就会比真实值小，
+    // 而界面上看不出任何异常 —— 必须显式核对行数。
+    const seen = new Set();
+    let candidateRows = 0;
+    for (const tr of document.querySelectorAll('tbody tr, .el-table__row, [class*=row]')) {
+      if (seen.has(tr)) continue;
+      seen.add(tr);
+      const t = clean(tr.textContent);
+      if (t && /\d+(?:\.\d+)?\s*\/\s*\d+(?:\.\d+)?/.test(t)) candidateRows += 1;
+    }
+    const tableInfo = {
+      parsedRows: rows.length,
+      candidateRows,
+      tbodyTr: document.querySelectorAll('tbody tr').length,
+      elTableRow: document.querySelectorAll('.el-table__row').length,
+      rowselectors: document.querySelectorAll('[class*=row]').length,
+      pagers: [...document.querySelectorAll('.el-pagination, [class*=pagination], [class*=pager]')]
+        .map((node) => clean(node.textContent).slice(0, 70)).filter(Boolean).slice(0, 3),
+      totalText: (pageText.match(/共\s*\d+\s*条/) || pageText.match(/共\s*\d+\s*页/) || [''])[0]
+    };
     // scraped 表示“这次真的从积分页读到了数据”。绝不能只看容器元素在不在：
     // 积分页是 SPA，.my-score / .el-table__body-wrapper 是空壳容器，数据靠接口
     // 异步填进去。曾经用“元素存在”当判据，把页面上的“0 积分”当成真实总分采纳，
@@ -1233,6 +1290,7 @@ async function extractScoreProgress(page) {
       .map((node) => clean(node.textContent)).filter(Boolean).slice(0, 10);
     return {
       rows,
+      tableInfo,
       totalPoints: totalMatch ? Number(totalMatch[1]) : null,
       totalRead: Boolean(totalMatch),
       scraped,
@@ -1258,13 +1316,35 @@ async function extractScoreProgress(page) {
   return {
     points: [...grouped.values()],
     rows: result.rows || [],
+    // 首行原始文本与单元格，供诊断对照 —— 只看 text 无法判断提取对不对，
+    // 这次"整张表文字当成活动名"就是靠对照 cells 才定位到的。
+    firstRowText: (result.rows || [])[0]?.text || '',
+    firstRowCells: (result.rows || [])[0]?.cells || [],
     totalPoints: Number.isFinite(result.totalPoints) ? result.totalPoints : null,
     totalRead: Boolean(result.totalRead),
+    tableInfo: result.tableInfo || null,
     scraped: Boolean(result.scraped),
     diagnostics: result.diagnostics || null,
     recentPoints: (result.rows || []).length ? result.rows[0].current : null,
-    recentActivity: (result.rows || [])[0]?.text || ''
+    recentActivity: (result.rows || [])[0]?.title || ''
   };
+}
+
+// 判断一段文字是否"不像活动名"，从而拒绝把它显示为"最近活动"。
+//
+// 为什么必须挡一道：recentActivity 会被直接塞进个人卡片的 DOM，一旦拿到整张
+// 表格的文字，那串几百字的拼接文本会把卡片撑爆、盖住整个界面（实测发生过）。
+// 取数逻辑再稳也不该让界面承担这个风险，所以在写回状态之前再校验一次。
+function looksLikeActivityTitle(value) {
+  const text = String(value || '').trim();
+  if (!text) return false;
+  if (text.length > 60) return false;                                  // 真活动名没这么长
+  if (/序号|活动名称|所属部门|活动课程|活动时间|类型名称/.test(text)) return false;  // 表头
+  if (/\d{4}-\d{2}-\d{2}/.test(text)) return false;                    // 日期
+  const sectionHits = ['先进制造', '能源电力', '资源环境', '信息工业', '多彩未央']
+    .filter((name) => text.includes(name)).length;
+  if (sectionHits >= 2) return false;                                  // 多板块名 = 拼接文本
+  return true;
 }
 
 async function openActivityListFromHome(page) {
@@ -1446,6 +1526,46 @@ async function scan() {
       totalSource = Number.isFinite(explicitTotal) ? '页面总分(未确认)' : '无可用数据';
     }
     trace(`[积分] 板块合计=${pointsSum} 有效板块之和=${effectiveSum}(${effectivePoints.length} 个) 页面总分=${explicitTotal} 采用=${totalPoints} 来源=${totalSource} 积分页可用=${scorePageUsable} 读到总分文字=${scoreData.totalRead} 上次已知=${keptTotal}`);
+    // 诊断：把首行的原始文本与拆分出的单元格打出来。
+    // "整张表文字被当成活动名"就是靠对照这两者才定位到的 —— 只打 text 看不出
+    // 它其实是整表，只有看到 cells 才知道正确取法。
+    if (scoreData.firstRowText || scoreData.firstRowCells?.length) {
+      trace(`[积分页] 首行 text=${JSON.stringify(scoreData.firstRowText.slice(0, 90))}`);
+      trace(`[积分页] 首行 cells(${scoreData.firstRowCells.length})=${JSON.stringify(scoreData.firstRowCells.slice(0, 8))}`);
+    }
+    // 逐行打出"板块 当前/上限 活动名"，方便和站点积分页的明细表逐条对齐核对。
+    // 光有"板块之和=34"看不出对不对，必须能对上每一行才行。
+    if (scoreData.rows?.length) {
+      trace(`[积分页] 明细共 ${scoreData.rows.length} 行（与站点表格核对用）：`);
+      for (const row of scoreData.rows.slice(0, 14)) {
+        trace(`[积分页]   ${row.section} ${row.current}/${row.maximum}  ${JSON.stringify(String(row.title || '').slice(0, 40))}`);
+      }
+      if (scoreData.rows.length > 14) trace(`[积分页]   …还有 ${scoreData.rows.length - 14} 行`);
+    }
+    trace(`[积分页] 取到的活动名=${JSON.stringify(scoreData.recentActivity || '')}`);
+    // 表格规模核对：板块积分靠逐行累加，所以必须确认明细行全都读到了。
+    // 若站点分页而这里只读到第一页，累加值会偏小却看不出异常。
+    if (scoreData.tableInfo) {
+      const t = scoreData.tableInfo;
+      trace(`[积分页] 表格规模 解析行=${t.parsedRows} 命中行=${t.candidateRows} tbodyTr=${t.tbodyTr} elTableRow=${t.elTableRow} [class*=row]=${t.rowselectors}${t.totalText ? ' ' + t.totalText : ''}`);
+      if (t.pagers?.length) trace(`[积分页] 分页控件=${JSON.stringify(t.pagers)}`);
+      if (t.candidateRows !== t.parsedRows) {
+        trace(`[积分页] 注意：命中 ${t.candidateRows} 行但只解析出 ${t.parsedRows} 行，差额需检查选板块逻辑。`);
+      }
+    }
+    // 活动名要做一次校验后再用：脏数据会把个人卡片撑爆（实测）。
+    // 优先用积分页首行取到的活动名（那才是"最近获得积分的那次活动"），
+    // 它不可信时退回活动列表的首项（是干净的活动名），最后才用上一次的值。
+    const candidateTitles = [
+      scoreData.recentActivity,
+      (profileData.recentActivities || [])[0],
+      (previousProfile.recentActivities || [])[0],
+      previousProfile.recentActivity
+    ];
+    const recentActivity = candidateTitles.find((value) => looksLikeActivityTitle(value)) || '';
+    if (scoreData.recentActivity && !looksLikeActivityTitle(scoreData.recentActivity)) {
+      trace(`[积分页] 活动名不可信，已丢弃：${JSON.stringify(String(scoreData.recentActivity).slice(0, 70))}`);
+    }
     const mergedProfile = {
       ...previousProfile,
       ...profileData,
@@ -1454,7 +1574,7 @@ async function scan() {
       avatar: profileData.avatar || previousProfile.avatar || '',
       totalPoints,
       recentPoints: scoreData.recentPoints ?? profileData.recentPoints ?? previousProfile.recentPoints ?? null,
-      recentActivity: scoreData.recentActivity || profileData.recentActivity || previousProfile.recentActivity || '',
+      recentActivity,
       recentActivities: profileData.recentActivities?.length ? profileData.recentActivities : (previousProfile.recentActivities || [])
     };
     const hasBaseline = lastState.backend.lastScan !== null;
