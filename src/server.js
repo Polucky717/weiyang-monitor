@@ -1278,7 +1278,12 @@ async function extractScoreProgress(page) {
       if (tr.closest('.el-table__header-wrapper') || tr.querySelector('th')) continue;
       const text = clean(tr.textContent);
       if (!text || !/\d+(?:\.\d+)?\s*\/\s*\d+(?:\.\d+)?/.test(text)) continue;
-      // 整行文字里出现列名 = 表头行或表头混进了行文本，一律不要
+      // 整行文字里出现**列名**才算表头行。
+      //
+      // 这里只能放列名，不能放"讲座""沙龙"这类词 —— 它们会出现在真实活动名里
+      // （例如"午餐微沙龙…"），拿来做排除条件会把正常数据行误杀。
+      // 判断"是不是表头"另有一条更可靠的依据：表头的单元格数通常和普通行不同，
+      // 见下面的 cellCounts 分布。
       if (/序号|活动名称|所属部门|活动时间|活动课程积分|类型名称/.test(text)) continue;
       // 板块名：先看行内元素，再退回整行文本里的关键词
       let section = clean(tr.querySelector('[class*=section], [class*=module], [class*=tag], [class*=cate]')?.textContent);
@@ -1358,19 +1363,32 @@ async function extractScoreProgress(page) {
     // 为什么需要：板块积分是"逐行累加"得来的，所以必须先确认页面上的明细行
     // **全都被读到了**。如果表格分页（只渲染第一页），累加值就会比真实值小，
     // 而界面上看不出任何异常 —— 必须显式核对行数。
-    // 独立重数一遍"看起来像数据行的 <tr>"，用来和真正解析出的行数对照。
-    // 必须排除表头，否则它会被算成一行，差额永远对不上、这个核对就失去意义。
+    // 独立重数一遍"看起来像数据行的元素"，用来和真正解析出的行数对照。
+    //
+    // 两个必须注意的点：
+    // 1) 这里的数可能**大于**解析行数，这是正常的 —— 站点把每行渲染了两遍
+    //    （同一 <tr class="el-table__row"> 既在 tbody 里又命中 [class*=row]，
+    //    且 DOM 里每行确实有重复），去重后行数自然会少。所以两个数不等
+    //    **不能**直接判定为异常。
+    // 2) 不能用"文字里有没有活动名"来判断一行是不是数据行：活动名恰好包含
+    //    "讲座""沙龙"这类词时会被误杀。只按"行内有没有积分进度 N/M"来数。
     let candidateRows = 0;
-    for (const tr of new Set(document.querySelectorAll('tr, .el-table__row'))) {
-      if (tr.closest('.el-table__header-wrapper') || tr.querySelector('th')) continue;
-      const t = clean(tr.textContent);
+    for (const node of new Set(document.querySelectorAll('tr, .el-table__row'))) {
+      const t = clean(node.textContent);
       if (!t || !/\d+(?:\.\d+)?\s*\/\s*\d+(?:\.\d+)?/.test(t)) continue;
-      if (/序号|活动名称|所属部门|活动时间|活动课程积分|类型名称/.test(t)) continue;
       candidateRows += 1;
+    }
+    // 每行的单元格个数分布。表头行/总计行的列数通常和普通数据行不同，
+    // 这个分布能直接指出"哪一行不是数据行"，比按文字猜可靠得多。
+    const cellCounts = {};
+    for (const row of rows) {
+      const key = String(row.cellCount);
+      cellCounts[key] = (cellCounts[key] || 0) + 1;
     }
     const tableInfo = {
       parsedRows: rows.length,
       candidateRows,
+      cellCounts,
       tbodyTr: document.querySelectorAll('tbody tr').length,
       elTableRow: document.querySelectorAll('.el-table__row').length,
       rowselectors: document.querySelectorAll('[class*=row]').length,
@@ -1667,9 +1685,12 @@ async function scan() {
     if (scoreData.tableInfo) {
       const t = scoreData.tableInfo;
       trace(`[积分页] 表格规模 解析行=${t.parsedRows} 命中行=${t.candidateRows} tbodyTr=${t.tbodyTr} elTableRow=${t.elTableRow} [class*=row]=${t.rowselectors}${t.totalText ? ' ' + t.totalText : ''}`);
+      if (t.cellCounts) trace(`[积分页] 每行单元格数分布=${JSON.stringify(t.cellCounts)}`);
       if (t.pagers?.length) trace(`[积分页] 分页控件=${JSON.stringify(t.pagers)}`);
-      if (t.candidateRows !== t.parsedRows) {
-        trace(`[积分页] 注意：命中 ${t.candidateRows} 行但只解析出 ${t.parsedRows} 行，差额需检查选板块逻辑。`);
+      // 命中行数 > 解析行数不代表有问题：站点把每行渲染了两遍，去重后必然更少。
+      // 真正值得警觉的是**解析行数远多于命中行数**（说明有重复累加的风险）。
+      if (t.parsedRows > t.candidateRows) {
+        trace(`[积分页] 注意：解析出 ${t.parsedRows} 行但只命中 ${t.candidateRows} 个元素，可能存在重复累加。`);
       }
     }
     // 用站点自己的"总计"核对逐行累加的结果。
