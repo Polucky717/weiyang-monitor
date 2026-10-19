@@ -44,7 +44,11 @@ const BROWSER_GLOBALS = ('document window navigator location localStorage sessio
   'alert confirm prompt getComputedStyle requestAnimationFrame cancelAnimationFrame ' +
   'Element HTMLElement Node NodeList Event CustomEvent MutationObserver IntersectionObserver ' +
   'XMLHttpRequest WebSocket Worker Image Audio Option DOMParser FileReader ' +
-  'caches indexedDB').split(/\s+/);
+  'caches indexedDB PopStateEvent HashChangeEvent StorageEvent CloseEvent ' +
+  'CSS CSSStyleSheet DOMPoint DOMRect Range Selection ClipboardEvent DragEvent ' +
+  'KeyboardEvent MouseEvent PointerEvent TouchEvent WheelEvent FocusEvent InputEvent ' +
+  'SubmitEvent ErrorEvent ProgressEvent ResizeObserver PerformanceObserver BroadcastChannel ' +
+  'MessageChannel MessagePort atob btoa scrollTo scrollBy matchMedia').split(/\s+/);
 for (const name of BROWSER_GLOBALS) GLOBALS.add(name);
 
 // 把注释、字符串、模板串、正则字面量替换成空格，保持字符数与行数不变。
@@ -130,7 +134,9 @@ function findUndeclared(rawSrc) {
   const src = String(rawSrc).replace(/\r\n?/g, '\n');
   const code = stripLiterals(src);
   const declared = collectDeclared(code);
-  const lines = code.split('\n');
+  // 把反斜杠转义整体抹掉再扫标识符：`\d+`、`\s*`、`\n` 里的 d/s/n 会被
+  // 当成裸标识符，产生稳定的假报（例如 /(\d+)\s*\/\s*(\d+)/ 报出 d 和 s）。
+  const lines = code.split('\n').map((line) => line.replace(/\\[\s\S]/g, '  '));
 
   // 收集所有“裸引用”（排除 .prop 这种属性名）
   const refs = new Map();

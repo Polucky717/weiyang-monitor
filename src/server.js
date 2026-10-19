@@ -854,79 +854,223 @@ async function extractPersonalProfile(page) {
   };
 }
 
+// 多策略导航到积分页，并顺手把积分相关接口的响应抓下来。
+//
+// 为什么需要多策略：直接 page.goto(积分页) 有时会被前端路由弹回主页
+// （日志里落点是 home/?next=…my-score，且 .my-score 容器都没渲染）。
+// 个人页用同样的方式却能正常打开，说明不是登录态问题，而是这条路由对
+// “冷启动直连”不友好。所以这里依次尝试：
+//   1. 先开主页让 SPA 起来，再导航到积分页
+//   2. 若没渲染出内容，退回主页，在站内用 history API 走前端路由
+//   3. 若还是不行，直接点页面上指向积分页的链接
+// 每条策略之后都等一下表格，任何一条成功就返回。
+//
+// 同时挂 response 监听收集接口 URL 与 JSON 摘要：即使页面渲染成一具空壳，
+// 只要接口把板块数据返回过，下面就能直接解析接口数据，不依赖 DOM。
+async function openScorePageAndCapture(page) {
+  const apiCalls = [];
+  const interesting = /my-?score|score|point|integral|train_platform|trainingproject/i;
+  const onResponse = (response) => {
+    if (apiCalls.length >= 40) return;
+    const url = response.url();
+    if (!interesting.test(url)) return;
+    if (!/json|\/v\d\/|api/i.test(url) && !/my-?score|score|point|integral/i.test(url)) return;
+    apiCalls.push({ url, status: response.status() });
+    // 立刻把 JSON 正文留下：页面随后可能被导航走，response 就取不到了。
+    response.json().then((payload) => {
+      const item = apiCalls[apiCalls.length - 1];
+      if (item && item.url === url) item.payload = payload;
+    }).catch(() => {});
+  };
+  page.on('response', onResponse);
+
+  const ready = async () => {
+    // 每条策略最多等 8 秒。四条策略全失败时总耗时上界约 40 秒，
+    // 扫描间隔是 30 分钟，这个代价可以接受。
+    await page.waitForSelector('.my-score, .el-table__body-wrapper tbody tr', { timeout: 8_000 }).catch(() => {});
+    await page.waitForTimeout(600);
+    const text = await page.evaluate(() => (document.body && document.body.innerText) || '').catch(() => '');
+    return /\d+(?:\.\d+)?\s*\/\s*\d+(?:\.\d+)?/.test(text);
+  };
+
+  const attempts = [
+    { name: '直连', run: async () => { await page.goto(SCORE_URL, { waitUntil: 'domcontentloaded', timeout: 45_000 }); } },
+    {
+      name: '先主页再直连',
+      run: async () => {
+        await page.goto(HOME_URL, { waitUntil: 'domcontentloaded', timeout: 45_000 });
+        await page.waitForTimeout(1200);
+        await page.goto(SCORE_URL, { waitUntil: 'domcontentloaded', timeout: 45_000 });
+      }
+    },
+    {
+      name: '站内前端路由',
+      run: async () => {
+        await page.goto(HOME_URL, { waitUntil: 'domcontentloaded', timeout: 45_000 });
+        await page.waitForTimeout(1500);
+        await page.evaluate((target) => {
+          const path = new URL(target).pathname;
+          history.pushState({}, '', path);
+          window.dispatchEvent(new PopStateEvent('popstate', { state: {} }));
+        }, SCORE_URL).catch(() => {});
+      }
+    },
+    {
+      name: '点击站内链接',
+      run: async () => {
+        const href = await page.locator('a').evaluateAll((links) => {
+          const hit = links.find((node) => /积分|score/i.test(node.textContent || '') && /score/i.test(node.href || ''));
+          return hit ? hit.href : '';
+        }).catch(() => '');
+        if (!href) throw new Error('主页上没有指向积分页的链接');
+        await page.goto(href, { waitUntil: 'domcontentloaded', timeout: 45_000 });
+      }
+    }
+  ];
+
+  const tried = [];
+  for (const attempt of attempts) {
+    try {
+      await attempt.run();
+      await page.waitForTimeout(800);
+      const ok = await ready();
+      tried.push(`${attempt.name}=${ok ? '成功' : '空'}`);
+      if (ok) break;
+    } catch (error) {
+      tried.push(`${attempt.name}=失败(${String(error && error.message || error).slice(0, 40)})`);
+    }
+  }
+  page.off('response', onResponse);
+  return { apiCalls, attempts: tried.join(' ') };
+}
+
+// 从接口响应里找积分数据。
+//
+// 为什么值得做：积分页的 DOM 抓取依赖 .my-score / el-table_1_column_N 这些
+// 具体样式，站点一改就全废，而且这次连页面都没渲染出来。而活动列表早就证明
+// “走接口拿数据”是可靠的。这里不硬编码端点，而是在导航积分页时把响应的 JSON
+// 按结构筛一遍：只要某个响应里存在“板块 + 数字”的数组，就认为它是积分数据。
+// 这样即使站点换了端点名字也能命中。
+function extractScoreFromJson(payload) {
+  const SECTIONS = ['先进制造', '能源电力', '资源环境', '信息工业', '多彩未央', '微沙龙讲座', '比赛培训', '学业支持', '健康心理', '实践创新'];
+  const num = (value) => (Number.isFinite(Number(value)) ? Number(value) : null);
+  const pickNumber = (node, keys) => {
+    for (const key of keys) {
+      const value = num(node && node[key]);
+      if (value !== null) return value;
+    }
+    return null;
+  };
+  const found = [];
+  // 活动记录与“板块积分”长得很像：活动列表接口里每条活动同样带 section（'信息工业'）
+  // 和 points 字段，光看这两个键会把它误判成板块数据（实测确实误判了，把单条活动的
+  // 2 分当成了信息工业板块的总分）。活动记录一定带下面这些活动专有字段，据此排除。
+  const ACTIVITY_MARKERS = ['train_class_id', 'train_class_name', 'sign', 'sign_up', 'class_time', 'sign_up_time', 'activity_form', 'deadline'];
+  const looksLikeActivity = (entry) => ACTIVITY_MARKERS.some((key) => entry[key] !== undefined && entry[key] !== null && entry[key] !== '');
+  const visit = (node, depth) => {
+    if (!node || typeof node !== 'object' || depth > 6 || found.length >= 3) return;
+    if (Array.isArray(node)) {
+      const rows = [];
+      for (const entry of node) {
+        if (!entry || typeof entry !== 'object') continue;
+        if (looksLikeActivity(entry)) continue;
+        const name = String(entry.section || entry.module || entry.tag || entry.name || entry.type || '').trim();
+        if (!SECTIONS.includes(name)) continue;
+        const current = pickNumber(entry, ['current', 'score', 'point', 'points', 'value', 'got', 'gain', 'integral', 'my_score']);
+        const target = pickNumber(entry, ['target', 'maximum', 'max', 'full', 'total', 'require', 'need']);
+        if (current === null) continue;
+        rows.push({ section: name, current, maximum: target });
+      }
+      if (rows.length) { found.push(rows); return; }
+      for (const entry of node) visit(entry, depth + 1);
+      return;
+    }
+    for (const value of Object.values(node)) visit(value, depth + 1);
+  };
+  visit(payload, 0);
+  if (!found.length) return null;
+  // 取板块最多的那一组
+  return found.sort((a, b) => b.length - a.length)[0];
+}
+
 async function extractScoreProgress(page) {
   const result = await page.evaluate(() => {
     const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
-    let currentSection = '';
-    const rows = [...document.querySelectorAll('.my-score .el-table__body-wrapper tbody tr')].map((row) => {
-      const sectionCell = row.querySelector('td.el-table_1_column_2:not(.is-hidden)');
-      if (sectionCell) currentSection = clean(sectionCell.textContent);
-      const activityCell = row.querySelector('td.el-table_1_column_3:not(.is-hidden)');
-      const scoreCell = row.querySelector('td.el-table_1_column_7:not(.is-hidden)');
-      const activity = clean(activityCell?.textContent);
-      const scoreText = clean(scoreCell?.textContent);
-      const score = scoreText.match(/(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)/);
-      return { section: currentSection, activity, current: score ? Number(score[1]) : null, maximum: score ? Number(score[2]) : null };
-    }).filter((row) => row.section && Number.isFinite(row.current));
-    const summary = clean(document.querySelector('.my-score .shadow-box')?.textContent);
-    const totalMatch = summary.match(/获得\s*(\d+(?:\.\d+)?)\s*积分/);
-    // 摘要区域的选择器可能随页面版本变化，取不到时退回到整页文本里找
-    // “获得 N 积分 / 累计 N 积分 / 共 N 积分”。仍然取不到就交给调用方用
-    // 各板块之和作为累计积分。
-    const pageText = clean(document.body?.innerText || '').slice(0, 4000);
-    const fallbackMatch = totalMatch
-      || pageText.match(/(?:获得|累计|共)\s*(\d+(?:\.\d+)?)\s*(?:个)?\s*积分/);
-    // scraped 表示“这次真的从积分页读到了数据”。
-    //
-    // 这里绝对不能只看容器元素在不在：积分页是 SPA，`.my-score` 和
-    // `.el-table__body-wrapper` 这些是**空壳容器**，数据是通过接口异步填进去的。
-    // 曾经用「元素存在」当判据，结果在数据尚未渲染时认定 scraped=true，
-    // 又把页面上的“0 积分”当成真实总分采纳，把已知的 14 分覆盖成 0
-    // （日志证据：`采用=0（0 个板块，积分页可用=true）`）。所以现在只认两件事：
-    // 要么解析出了明细行，要么从摘要文本里明确读到“获得 N 积分”。
-    //
-    // totalRead 单独记录“分数文字是否真的读到过”：totalPoints 为 0 有可能来自
-    // 别处（例如个人主页把“0 个人积分”误读成总分），不能把它当成“确认是 0 分”。
+    // 按“N/M”文本找积分行，而不是靠 .my-score 和 el-table_1_column_N 这类
+    // 具体样式名 —— 站点一改样式，绑死选择器的写法就会静默返回 0 行。
+    // 同时从同名 class 里读板块名，读不到就看这行里有没有板块关键词。
+    const SECTION_NAMES = ['先进制造', '能源电力', '资源环境', '信息工业', '多彩未央', '微沙龙讲座', '比赛培训', '学业支持', '健康心理', '实践创新'];
+    const rows = [];
+    let lastSection = '';
+    for (const tr of document.querySelectorAll('tbody tr, .el-table__row, [class*=row]')) {
+      const text = clean(tr.textContent);
+      if (!text || !/\d+(?:\.\d+)?\s*\/\s*\d+(?:\.\d+)?/.test(text)) continue;
+      // 板块名：先看行内元素，再退回整行文本里的关键词
+      let section = clean(tr.querySelector('[class*=section], [class*=module], [class*=tag], [class*=cate]')?.textContent);
+      if (!SECTION_NAMES.includes(section)) {
+        section = SECTION_NAMES.find((name) => text.includes(name)) || '';
+      }
+      if (!section) {
+        // 合并单元格的表格里，板块名可能出现在上一行（rowspan）
+        const prev = tr.previousElementSibling;
+        if (prev) {
+          const prevText = clean(prev.textContent);
+          const prevSection = SECTION_NAMES.find((name) => prevText.includes(name));
+          if (prevSection) section = prevSection;
+        }
+      }
+      if (!section) section = lastSection;
+      if (!section) continue;
+      lastSection = section;
+      const match = text.match(/(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)/);
+      if (!match) continue;
+      rows.push({ section, current: Number(match[1]), maximum: Number(match[2]), text: text.slice(0, 80) });
+    }
+    const pageText = clean(document.body && document.body.innerText || '').slice(0, 6000);
+    const totalMatch = pageText.match(/(?:获得|累计|共)\s*(\d+(?:\.\d+)?)\s*(?:个)?\s*积分/);
+    // scraped 表示“这次真的从积分页读到了数据”。绝不能只看容器元素在不在：
+    // 积分页是 SPA，.my-score / .el-table__body-wrapper 是空壳容器，数据靠接口
+    // 异步填进去。曾经用“元素存在”当判据，把页面上的“0 积分”当成真实总分采纳，
+    // 把已知的 14 分覆盖成 0（日志证据：采用=0，积分页可用=true）。
     const scraped = rows.length > 0 || Boolean(totalMatch);
-    // 抓不到时要能分辨原因，否则日志只留下“0 个板块”，没法判断是页面没渲染、
-    // 还是页面改版导致选择器失效。这里把几件事记下来：
-    //   hasMyScore   积分页的根容器在不在（不在 = 多半被跳转回主页了）
-    //   hasTable     表格容器在不在
-    //   rawRowCount  表格里的原始行数（未经字段过滤）——若 >0 而 rows=0，
-    //                说明行有了但列选择器（el-table_1_column_N）变了
-    //   headings     页面上疑似表头的文字，便于对照真实列名
     const hasMyScore = Boolean(document.querySelector('.my-score'));
     const hasTable = Boolean(document.querySelector('.el-table__body-wrapper'));
-    const rawRowCount = document.querySelectorAll('.my-score .el-table__body-wrapper tbody tr').length
-      || document.querySelectorAll('.el-table__body-wrapper tbody tr').length;
+    const rawRowCount = document.querySelectorAll('tbody tr').length;
     const headings = [...document.querySelectorAll('.my-score .el-table__header-wrapper th, .el-table__header-wrapper th')]
       .map((node) => clean(node.textContent)).filter(Boolean).slice(0, 10);
     return {
       rows,
-      totalPoints: fallbackMatch ? Number(fallbackMatch[1]) : null,
-      totalRead: Boolean(fallbackMatch),
+      totalPoints: totalMatch ? Number(totalMatch[1]) : null,
+      totalRead: Boolean(totalMatch),
       scraped,
-      diagnostics: { hasMyScore, hasTable, rawRowCount, headings }
+      diagnostics: {
+        hasMyScore, hasTable, rawRowCount, headings,
+        url: location.href,
+        title: document.title || '',
+        textStart: pageText.slice(0, 160)
+      }
     };
   }).catch((error) => ({
-    rows: [], totalPoints: null, totalRead: false, scraped: false,
-    diagnostics: { hasMyScore: false, hasTable: false, rawRowCount: -1, headings: [], error: String(error && error.message || error).slice(0, 120) }
+    rows: [], totalPoints: null, totalRead: false, scraped: false, diagnostics: null, evaluateError: String(error && error.message || error)
   }));
+
+  if (result.evaluateError) console.log(`[积分页-诊断] 页面脚本执行失败：${result.evaluateError}`);
+
   const grouped = new Map();
-  for (const row of result.rows) {
+  for (const row of result.rows || []) {
     const current = grouped.get(row.section) || { section: row.section, current: 0, target: thresholdFor(row.section), tone: toneFor(row.section) };
     current.current += row.current;
     grouped.set(row.section, current);
   }
   return {
     points: [...grouped.values()],
-    rows: result.rows,
+    rows: result.rows || [],
     totalPoints: Number.isFinite(result.totalPoints) ? result.totalPoints : null,
     totalRead: Boolean(result.totalRead),
     scraped: Boolean(result.scraped),
     diagnostics: result.diagnostics || null,
-    recentPoints: result.rows.length ? result.rows[0].current : null,
-    recentActivity: result.rows[0]?.activity || ''
+    recentPoints: (result.rows || []).length ? result.rows[0].current : null,
+    recentActivity: (result.rows || [])[0]?.text || ''
   };
 }
 
@@ -956,16 +1100,44 @@ async function scan() {
     await page.goto(PROFILE_URL, { waitUntil: 'domcontentloaded', timeout: 45_000 });
     await page.waitForTimeout(1000);
     const profileData = await extractPersonalProfile(page);
-    await page.goto(SCORE_URL, { waitUntil: 'domcontentloaded', timeout: 45_000 });
-    await page.waitForTimeout(1200);
-    const scoreData = await extractScoreProgress(page);
-    // 积分页偶尔会被登录跳转拦回主页，导致拿不到板块数据。记录真实落点与行数，
-    // 便于对照日志判断“累计积分为 0”是页面没抓到，还是本来就真的没有积分。
-    console.log(`[积分页] 落点=${page.url()} 板块数=${scoreData.points.length} 页面总分=${scoreData.totalPoints} 明细行=${scoreData.rows?.length ?? '-'}`);
+    // 积分页：多策略导航（直连 / 先主页再直连 / 站内路由 / 点链接），
+    // 同时收集积分相关接口的响应，供 DOM 抓不到时兜底。
+    const scoreNav = await openScorePageAndCapture(page);
+    let scoreData = await extractScoreProgress(page);
+    if (scoreData.points.length === 0) {
+      // DOM 没给出板块时，看这次导航里有没有积分接口响应可以直接解析。
+      // 这条路径不依赖任何样式名，站点改版也还能用。
+      for (const call of scoreNav.apiCalls) {
+        if (!call.payload) continue;
+        const fromApi = extractScoreFromJson(call.payload);
+        if (!fromApi || !fromApi.length) continue;
+        const grouped = new Map();
+        for (const row of fromApi) {
+          const current = grouped.get(row.section) || { section: row.section, current: 0, target: thresholdFor(row.section), tone: toneFor(row.section) };
+          current.current += row.current;
+          grouped.set(row.section, current);
+        }
+        scoreData = {
+          ...scoreData,
+          points: [...grouped.values()],
+          rows: fromApi,
+          scraped: true,
+          recentPoints: fromApi[0]?.current ?? null,
+          apiSource: call.url
+        };
+        console.log(`[积分页] 改从接口取到 ${fromApi.length} 个板块：${call.url.slice(0, 120)}`);
+        break;
+      }
+    }
+    // 记录真实落点、行数与各策略结果，便于对照日志判断失败原因。
+    console.log(`[积分页] 落点=${page.url()} 板块数=${scoreData.points.length} 页面总分=${scoreData.totalPoints} 明细行=${scoreData.rows?.length ?? '-'} 策略[${scoreNav.attempts}] 接口候选=${scoreNav.apiCalls.length}`);
     const diag = scoreData.diagnostics;
-    if (diag && scoreData.points.length === 0) {
-      // 抓不到板块时把页面的实际形态打出来：只有“0 个板块”这一条信息是无法排查的。
-      console.log(`[积分页-诊断] 根容器=${diag.hasMyScore} 表格容器=${diag.hasTable} 原始行数=${diag.rawRowCount} 表头=[${(diag.headings || []).join(' | ')}]${diag.error ? ' 错误=' + diag.error : ''}`);
+    if (scoreData.points.length === 0) {
+      console.log(`[积分页-诊断] 根容器=${diag?.hasMyScore} 表格容器=${diag?.hasTable} 原始行数=${diag?.rawRowCount} 标题=${JSON.stringify(diag?.title)} 表头=[${(diag?.headings || []).join(' | ')}]`);
+      console.log(`[积分页-诊断] 页面开头=${JSON.stringify((diag?.textStart || '').slice(0, 120))}`);
+      for (const call of scoreNav.apiCalls.slice(0, 12)) {
+        console.log(`[积分页-诊断] 接口 ${call.status} ${call.url.slice(0, 130)}${call.payload ? ' 已有JSON' : ''}`);
+      }
     }
     await openActivityListFromHome(page);
     const loginRequired = /login|signin|passport/i.test(page.url());
