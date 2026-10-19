@@ -904,12 +904,19 @@ async function openScorePageAndCapture(page) {
     const url = response.url();
     if (!interesting.test(url)) return;
     if (!/json|\/v\d\/|api/i.test(url) && !/my-?score|score|point|integral/i.test(url)) return;
-    apiCalls.push({ url, status: response.status() });
-    // 立刻把 JSON 正文留下：页面随后可能被导航走，response 就取不到了。
-    response.json().then((payload) => {
-      const item = apiCalls[apiCalls.length - 1];
-      if (item && item.url === url) item.payload = payload;
-    }).catch(() => {});
+    const item = { url, status: response.status() };
+    apiCalls.push(item);
+    // 立刻把正文留下：页面随后可能被导航走，response 就取不到了。
+    // 失败的响应也要读 —— 401/403 的正文通常写明原因（未登录？缺头？无权限？），
+    // 正是判断“为什么拿不到积分”的关键证据。之前只看状态码，等于把最有用的
+    // 信息丢了。
+    (async () => {
+      try {
+        const text = await response.text();
+        item.body = text.slice(0, 400);
+        try { item.payload = JSON.parse(text); } catch { /* 非 JSON，保留文本 */ }
+      } catch { /* 响应已被丢弃 */ }
+    })();
   };
   page.on('response', onResponse);
 
@@ -970,7 +977,62 @@ async function openScorePageAndCapture(page) {
     }
   }
   page.off('response', onResponse);
-  return { apiCalls, attempts: tried.join(' ') };
+
+  // 给诊断补三条关键信息：这次页面带了哪些 cookie、统计接口在"补齐活动接口同款请求头"
+  // 之后是否还 401、以及活动接口的对照状态。
+  //
+  // 为什么要对照：活动列表接口在同一个 context 里一直是 200（活动数据能抓到），
+  // 说明 cookie 本身有效。如果对照也是 200 而统计接口 401，那问题就锁定在
+  // "这个接口要额外的东西"（请求头、uv_id、权限），而不是登录过期 ——
+  // 这两条路的修法完全不同：前者补请求头，后者必须让用户重新登录。
+  const cookies = await page.context().cookies(SCORE_URL).catch(() => []);
+  const cookieNames = cookies.map((cookie) => cookie.name).sort();
+  const cookieValue = (name) => cookies.find((cookie) => cookie.name === name)?.value || '';
+  const headers = {
+    'x-csrftoken': cookieValue('csrftoken'),
+    'terminal-type': 'web',
+    xtbz: cookieValue('xtbz') || 'training',
+    'university-id': cookieValue('university_id') || '2993',
+    'platform-id': cookieValue('platform_id') || '8',
+    'x-client': 'web',
+    accept: 'application/json, text/plain, */*'
+  };
+
+  let statsProbe = null;
+  try {
+    statsProbe = await page.evaluate(async (h) => {
+      const out = {};
+      const jsonKeys = (text) => {
+        try {
+          const value = JSON.parse(text);
+          return Object.keys(value || {}).slice(0, 8).join(',') || '(空对象)';
+        } catch { return '(非JSON)'; }
+      };
+      const call = async (label, url, withHeaders) => {
+        try {
+          const res = await fetch(url, { credentials: 'include', cache: 'no-store', ...(withHeaders ? { headers: h } : {}) });
+          const text = await res.text();
+          out[label] = { status: res.status, len: text.length, keys: jsonKeys(text), head: text.slice(0, 160) };
+        } catch (error) {
+          out[label] = { error: String(error && error.message || error).slice(0, 100) };
+        }
+      };
+      const stats = 'https://weiyang.yuketang.cn/train_platform/v1/thu/my/train_statistics/?term=latest&uv_id=2993';
+      const acts = 'https://weiyang.yuketang.cn/train_platform/v1/detail/setting/all_trainclass_list/?page=1&page_size=10&query=&key=up_time&value=-&term=latest&uv_id=2993';
+      await call('statsPlain', stats, false);
+      await call('statsHeaders', stats, true);
+      await call('activityHeaders', acts, true);
+      // 站点前端可能把 uv_id / 学校信息放在 localStorage 里，统计接口或许只认那个。
+      try {
+        out.storageKeys = Object.keys(localStorage).slice(0, 20).join(',');
+      } catch { out.storageKeys = '(读不到)'; }
+      return out;
+    }, headers);
+  } catch (error) {
+    statsProbe = { error: String(error && error.message || error).slice(0, 120) };
+  }
+
+  return { apiCalls, attempts: tried.join(' '), cookieNames, statsProbe };
 }
 
 // 从接口响应里找积分数据。
@@ -1164,10 +1226,29 @@ async function scan() {
     if (scoreData.points.length === 0) {
       trace(`[积分页-诊断] 根容器=${diag?.hasMyScore} 表格容器=${diag?.hasTable} 原始行数=${diag?.rawRowCount} 标题=${JSON.stringify(diag?.title)} 表头=[${(diag?.headings || []).join(' | ')}]`);
       trace(`[积分页-诊断] 页面开头=${JSON.stringify((diag?.textStart || '').slice(0, 120))}`);
+      trace(`[积分页-诊断] cookie=[${(scoreNav.cookieNames || []).join(',')}]`);
       for (const call of scoreNav.apiCalls.slice(0, 12)) {
-        trace(`[积分页-诊断] 接口 ${call.status} ${call.url.slice(0, 130)}${call.payload ? ' 已有JSON' : ''}`);
+        trace(`[积分页-诊断] 接口 ${call.status} ${call.url.slice(0, 120)}`);
+        // 失败响应必须打出正文：它写明原因（未登录 / 缺头 / 无权限），
+        // 是决定“让用户重新登录”还是“补齐请求头”的唯一依据。
+        if (call.status >= 400 && call.body) trace(`[积分页-诊断]   ↑返回=${JSON.stringify(call.body.slice(0, 220))}`);
       }
       if (!scoreNav.apiCalls.length) trace('[积分页-诊断] 这次导航没有捕获到任何接口响应（页面可能压根没发起请求）');
+      const probe = scoreNav.statsProbe;
+      if (probe) {
+        if (probe.error) {
+          trace(`[积分页-诊断] 探针执行失败: ${probe.error}`);
+        } else {
+          const fmt = (label, r) => r && !r.error
+            ? `${label}=${r.status}(len=${r.len} keys=${r.keys})`
+            : `${label}=错误(${r ? r.error : '无结果'})`;
+          trace(`[积分页-诊断] 探针 ${fmt('统计接口裸请求', probe.statsPlain)} ${fmt('统计接口+请求头', probe.statsHeaders)} ${fmt('活动接口+请求头[对照]', probe.activityHeaders)}`);
+          if (probe.statsHeaders && probe.statsHeaders.status >= 400 && probe.statsHeaders.head) {
+            trace(`[积分页-诊断]   统计接口返回正文=${JSON.stringify(probe.statsHeaders.head.slice(0, 160))}`);
+          }
+          if (probe.storageKeys) trace(`[积分页-诊断] localStorage keys=[${probe.storageKeys}]`);
+        }
+      }
     }
     await openActivityListFromHome(page);
     const loginRequired = /login|signin|passport/i.test(page.url());
