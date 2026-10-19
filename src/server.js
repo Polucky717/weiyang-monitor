@@ -36,6 +36,35 @@ let connectedToExternalEdge = false;
 let monitorPage;
 let scanRunning = false;
 let notificationTestRunning = false;
+
+// 关键诊断信息要写进**自己控制的文件**，不能只靠 console.log。
+//
+// 为什么：进程的 stdout 是否进文件，完全取决于启动方式 —— run-monitor.cmd 走
+// npm start 时输出只进控制台窗口；只有 start-autostart.cmd / wrap-npm-start.ps1
+// 才会重定向到 logs\server.log。结果就是排查“改了代码没生效”时，我一直在读一个
+// 早已停止更新的 server.log，据此反复得出错误结论（误判了好几次代码版本）。
+// 这里让代码自己落盘到 logs\scan.log，无论怎么启动都能看到运行轨迹。
+const SELF_LOG = path.join(ROOT, 'logs', 'scan.log');
+function trace(message) {
+  const line = `[${new Date().toISOString()}] ${message}`;
+  console.log(line);
+  try {
+    fs.mkdirSync(path.dirname(SELF_LOG), { recursive: true });
+    fs.appendFileSync(SELF_LOG, line + '\n', 'utf8');
+  } catch { /* 落盘失败不该影响扫描 */ }
+}
+
+// 代码指纹：源文件大小 + 修改时间。
+// 它会出现在 /api/state 的 backend.codeVersion 里，因此**不需要读日志**就能确认
+// 当前进程加载的是哪一份代码 —— 这是这次排查踩坑最深的地方：日志文件是否更新
+// 取决于启动方式，靠日志判断代码版本会得出完全错误的结论。
+const CODE_VERSION = (() => {
+  try {
+    const stat = fs.statSync(__filename);
+    return `${stat.size}@${stat.mtime.toISOString()}`;
+  } catch { return 'unknown'; }
+})();
+
 let lastState = {
   backend: { status: 'starting', lastScan: null, authRequired: false, error: null, newCount: 0, scanSuccessful: false },
   activities: [],
@@ -1054,7 +1083,7 @@ async function extractScoreProgress(page) {
     rows: [], totalPoints: null, totalRead: false, scraped: false, diagnostics: null, evaluateError: String(error && error.message || error)
   }));
 
-  if (result.evaluateError) console.log(`[积分页-诊断] 页面脚本执行失败：${result.evaluateError}`);
+  if (result.evaluateError) trace(`[积分页-诊断] 页面脚本执行失败：${result.evaluateError}`);
 
   const grouped = new Map();
   for (const row of result.rows || []) {
@@ -1125,19 +1154,20 @@ async function scan() {
           recentPoints: fromApi[0]?.current ?? null,
           apiSource: call.url
         };
-        console.log(`[积分页] 改从接口取到 ${fromApi.length} 个板块：${call.url.slice(0, 120)}`);
+        trace(`[积分页] 改从接口取到 ${fromApi.length} 个板块：${call.url.slice(0, 120)}`);
         break;
       }
     }
     // 记录真实落点、行数与各策略结果，便于对照日志判断失败原因。
-    console.log(`[积分页] 落点=${page.url()} 板块数=${scoreData.points.length} 页面总分=${scoreData.totalPoints} 明细行=${scoreData.rows?.length ?? '-'} 策略[${scoreNav.attempts}] 接口候选=${scoreNav.apiCalls.length}`);
+    trace(`[积分页] 落点=${page.url()} 板块数=${scoreData.points.length} 页面总分=${scoreData.totalPoints} 明细行=${scoreData.rows?.length ?? '-'} 策略[${scoreNav.attempts}] 接口候选=${scoreNav.apiCalls.length}`);
     const diag = scoreData.diagnostics;
     if (scoreData.points.length === 0) {
-      console.log(`[积分页-诊断] 根容器=${diag?.hasMyScore} 表格容器=${diag?.hasTable} 原始行数=${diag?.rawRowCount} 标题=${JSON.stringify(diag?.title)} 表头=[${(diag?.headings || []).join(' | ')}]`);
-      console.log(`[积分页-诊断] 页面开头=${JSON.stringify((diag?.textStart || '').slice(0, 120))}`);
+      trace(`[积分页-诊断] 根容器=${diag?.hasMyScore} 表格容器=${diag?.hasTable} 原始行数=${diag?.rawRowCount} 标题=${JSON.stringify(diag?.title)} 表头=[${(diag?.headings || []).join(' | ')}]`);
+      trace(`[积分页-诊断] 页面开头=${JSON.stringify((diag?.textStart || '').slice(0, 120))}`);
       for (const call of scoreNav.apiCalls.slice(0, 12)) {
-        console.log(`[积分页-诊断] 接口 ${call.status} ${call.url.slice(0, 130)}${call.payload ? ' 已有JSON' : ''}`);
+        trace(`[积分页-诊断] 接口 ${call.status} ${call.url.slice(0, 130)}${call.payload ? ' 已有JSON' : ''}`);
       }
+      if (!scoreNav.apiCalls.length) trace('[积分页-诊断] 这次导航没有捕获到任何接口响应（页面可能压根没发起请求）');
     }
     await openActivityListFromHome(page);
     const loginRequired = /login|signin|passport/i.test(page.url());
@@ -1194,7 +1224,7 @@ async function scan() {
       totalPoints = Number.isFinite(explicitTotal) ? explicitTotal : null;
       totalSource = Number.isFinite(explicitTotal) ? '页面总分(未确认)' : '无可用数据';
     }
-    console.log(`[积分] 板块合计=${pointsSum} 有效板块之和=${effectiveSum}(${effectivePoints.length} 个) 页面总分=${explicitTotal} 采用=${totalPoints} 来源=${totalSource} 积分页可用=${scorePageUsable} 读到总分文字=${scoreData.totalRead} 上次已知=${keptTotal}`);
+    trace(`[积分] 板块合计=${pointsSum} 有效板块之和=${effectiveSum}(${effectivePoints.length} 个) 页面总分=${explicitTotal} 采用=${totalPoints} 来源=${totalSource} 积分页可用=${scorePageUsable} 读到总分文字=${scoreData.totalRead} 上次已知=${keptTotal}`);
     const mergedProfile = {
       ...previousProfile,
       ...profileData,
@@ -1224,10 +1254,10 @@ async function scan() {
     if (satisfied.size) {
       const list = [...satisfied].join('、');
       const skipped = activitiesWithRegistration.filter((item) => item.points > 0 && !item.registeredAt && isDone(item)).length;
-      console.log(`[达标] 已满分板块：${list}（因此不再提醒其中的 ${skipped} 个活动）`);
+      trace(`[达标] 已满分板块：${list}（因此不再提醒其中的 ${skipped} 个活动）`);
     }
     lastState = {
-      backend: { status: 'online', lastScan: now(), authRequired: false, error: null, newCount, scanSuccessful: true, sectionsSatisfied: [...satisfied] },
+      backend: { status: 'online', lastScan: now(), authRequired: false, error: null, newCount, scanSuccessful: true, sectionsSatisfied: [...satisfied], codeVersion: CODE_VERSION },
       ...data,
       activities: activitiesWithRegistration,
       points: effectivePoints,
@@ -1252,8 +1282,8 @@ async function scan() {
       connectedToExternalEdge = false;
     }
     // 扫描失败时保留上一次成功抓取的活动、积分和个人信息，只更新后台错误状态。
-    lastState = { ...lastState, backend: { ...lastState.backend, status: error.authRequired ? 'auth_required' : 'error', lastScan: lastState.backend.lastScan, authRequired: Boolean(error.authRequired), error: error.message, scanSuccessful: Boolean(lastState.backend.scanSuccessful) } };
-    console.error(`[${now()}] 扫描失败：${error.message}`);
+    lastState = { ...lastState, backend: { ...lastState.backend, status: error.authRequired ? 'auth_required' : 'error', lastScan: lastState.backend.lastScan, authRequired: Boolean(error.authRequired), error: error.message, scanSuccessful: Boolean(lastState.backend.scanSuccessful), codeVersion: CODE_VERSION } };
+    trace(`扫描失败：${error.message}`);
     return lastState;
   } finally {
     scanRunning = false;
@@ -1478,19 +1508,13 @@ if (process.argv.includes('--login')) {
     process.exitCode = 1;
   });
   server.listen(PORT, '127.0.0.1', () => {
-    // 启动时把“本次加载的是哪份代码”写进日志。
-    // 为什么需要：排查“改了代码但行为没变”时，光看日志内容无法判断进程到底加载的
-    // 是新代码还是旧代码 —— 实际情况中就因此反复误判过（以为重启了，其实旧进程
-    // 一直占着端口在跑）。把源文件的大小与修改时间打出来，一眼就能对上。
-    let fingerprint = '未知';
-    try {
-      const stat = fs.statSync(__filename);
-      fingerprint = `${stat.size}字节 修改于${stat.mtime.toISOString()}`;
-    } catch { /* 忽略：拿不到指纹不该影响启动 */ }
-    console.log(`未央观察站后台已启动：http://127.0.0.1:${PORT}`);
-    console.log(`[启动] 已加载代码：${__filename}`);
-    console.log(`[启动] 代码指纹：${fingerprint}`);
-    console.log(`[启动] PID=${process.pid} 积分页抓取=多策略(策略[]标记) 接口兜底=extractScoreFromJson`);
+    // 启动时把“本次加载的是哪份代码”写进自己控制的日志与 /api/state。
+    // stdout 是否进文件取决于启动方式（npm start 只进控制台窗口），所以既落盘
+    // 到 logs\scan.log，也通过 backend.codeVersion 暴露出来。
+    trace(`未央观察站后台已启动：http://127.0.0.1:${PORT}`);
+    trace(`[启动] 已加载代码：${__filename}`);
+    trace(`[启动] 代码指纹：${CODE_VERSION}`);
+    trace(`[启动] PID=${process.pid} 积分页抓取=多策略 接口兜底=extractScoreFromJson 日志=logs/scan.log`);
   });
   scan();
   scan();
