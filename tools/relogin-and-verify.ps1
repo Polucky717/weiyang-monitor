@@ -157,14 +157,37 @@ try {
 }
 if ($scanError) { Write-Host "  扫描请求出错：$scanError" -ForegroundColor Yellow }
 
+# 再查一次状态，等它真正落定再下结论。
+#
+# 为什么必须等：`/api/scan` 返回后，日志里还要过几秒才写出后面的判据行
+# （实测 12:09:41 启动、12:09:42 回填、12:09:49 才写出"[积分页] 落点=…板块数=5"）。
+# 脚本原来在这之前就读日志，只能看到前几行，于是给出"没有报您没有登陆、
+# 但也没抓到板块"这种**悬而未决**的结论 —— 用户看了不知道到底成没成。
+# 这里改成轮询状态：只要 status 变成 online 且 authRequired 为 false，
+# 就说明这次登录确实生效了。
+$settled = $null
+for ($i = 0; $i -lt 30; $i += 1) {
+  Start-Sleep -Seconds 2
+  try {
+    $cur = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/state" -TimeoutSec 5
+    if ($cur.backend.status -eq 'online' -and -not $cur.backend.authRequired) { $settled = $cur; break }
+    if ($cur.backend.status -eq 'auth_required') { $settled = $cur; break }
+  } catch { }
+}
+if ($settled) {
+  Write-Host ''
+  Write-Host "  状态已落定：status=$($settled.backend.status)  authRequired=$($settled.backend.authRequired)  积分=$($settled.profile.totalPoints)" -ForegroundColor Gray
+} else {
+  Write-Host ''
+  Write-Host '  等待状态落定超时（60 秒），按现有日志判定。' -ForegroundColor Yellow
+}
+
 $scanLog = Join-Path $root 'logs\scan.log'
 if (Test-Path -LiteralPath $scanLog) {
   # 只取"最近一次后台启动之后"的日志来判定。
   #
-  # 原来看 -Tail 25，结果**误报了 FAIL**：诊断输出本身就有 18 行以上，
-  # 而日志里上一次失败扫描留下的 6 行"您没有登陆"仍然在窗口内，
-  # 把这次成功的"板块数=5"挤出了窗口 —— 于是 gotBoards 为空、
-  # loginGone 又为假，脚本报 FAIL，但后台其实已经抓到了数据。
+  # 原来看 -Tail 25（固定行数），窗口会越过本次会话伸进上一次会话，
+  # 把上一次失败留下的"您没有登陆"和本次的成功行混在一起，口径不可靠。
   # 按启动标记切分才是正确口径：本次登录的成败只由本次会话的日志决定。
   $lines = @(Get-Content -LiteralPath $scanLog -Encoding UTF8)
   $start = -1
@@ -179,13 +202,23 @@ if (Test-Path -LiteralPath $scanLog) {
   $loginGone = -not ($tail | Where-Object { $_ -match '没有登[录陆]' })
   $gotBoards = $tail | Where-Object { $_ -match '\[积分页\].*板块数=([1-9]\d*)' }
   $online = $tail | Where-Object { $_ -match '\[积分\] 板块合计=' }
+  # 状态接口是更权威的判据：它直接反映后台自己认为登录是否有效。
+  # 日志用来解释原因，状态用来下结论 —— 日志可能因为时序而缺行，状态不会。
+  $statusOnline = $settled -and $settled.backend.status -eq 'online' -and -not $settled.backend.authRequired
   Write-Host ''
-  if ($gotBoards -and $online) {
-    Write-Host '  PASS —— 积分页抓到板块数据了，登录已恢复正常。' -ForegroundColor Green
+  if (($gotBoards -and $online) -or $statusOnline) {
+    Write-Host '  PASS —— 登录已恢复正常，积分页抓到了板块数据。' -ForegroundColor Green
+    if ($statusOnline -and -not $gotBoards) {
+      Write-Host '  （判据来自状态接口：status=online 且 authRequired=false；日志里还没写出对应行是因为扫描刚结束）' -ForegroundColor Gray
+    }
+  } elseif ($settled -and $settled.backend.status -eq 'auth_required') {
+    Write-Host '  FAIL —— 后台仍认为登录失效（authRequired=true）。' -ForegroundColor Red
+    Write-Host '  请确认在浏览器窗口里已经完成登录、并且回到命令行按了 Enter。' -ForegroundColor Yellow
   } elseif ($gotBoards) {
     Write-Host '  抓到板块数据了，但没看到积分合计那行，请把上面的日志发给开发者。' -ForegroundColor Yellow
   } elseif ($loginGone) {
-    Write-Host '  积分页这次没有报"您没有登陆"，但也没抓到板块，请把上面的日志发给开发者。' -ForegroundColor Yellow
+    Write-Host '  没有报"您没有登陆"，但状态还没落定，暂时无法下结论。' -ForegroundColor Yellow
+    Write-Host '  稍等一分钟后再看面板，或把上面的日志发给开发者。' -ForegroundColor Yellow
   } else {
     Write-Host '  FAIL —— 接口仍然返回"您没有登陆"，登录可能没有真正保存成功。' -ForegroundColor Red
     Write-Host '  请确认在浏览器窗口里已经完成登录、并且回到命令行按了 Enter。' -ForegroundColor Yellow

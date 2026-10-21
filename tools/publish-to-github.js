@@ -32,6 +32,7 @@ const FILES = [
   'run-monitor.cmd',
   'restart-monitor.cmd',
   'relogin-monitor.cmd',
+  'verify-session.cmd',
   'start-autostart.vbs',
   'start-autostart.cmd',
   'scripts/run-monitor.cmd',
@@ -63,6 +64,7 @@ const FILES = [
   'tools/relogin-and-verify.ps1',
   'tools/test-check-scope.js',
   'tools/test-session-state.js',
+  'tools/verify-session-restore.ps1',
 
   // 运行脚本（PowerShell / cmd）
   'scripts/ensure-node.ps1',
