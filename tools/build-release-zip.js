@@ -56,6 +56,7 @@ const FILES = [
   'tools/relogin-and-verify.ps1',
   'tools/test-check-scope.js',
   'tools/test-session-state.js',
+  'tools/test-activity-row.js',
   'tools/verify-session-restore.ps1',
 
   // 运行脚本（PowerShell / cmd）

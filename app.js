@@ -196,7 +196,7 @@ function renderActivities() {
     <article class="activity-row${activity.registeredAt ? ' registered' : ''}${isSectionSatisfied(activity) ? ' satisfied' : ''}">
       <div class="activity-icon ${activity.tone}">${iconFor(activity)}</div>
       <div class="activity-main"><strong>${activity.title}</strong><p>${activity.description || ''}</p></div>
-      <div class="activity-tags"><span class="section-tag ${activity.tone === 'orange' ? 'orange' : activity.tone === 'pink' ? 'pink' : ''}">${activity.section}</span>${activity.registeredAt ? '<span class="registered-tag" title="你已经点过报名，不再计入待关注活动">已报名</span>' : ''}${isSectionSatisfied(activity) ? '<span class="done-tag" title="该板块积分已拿满，再报名不会增加积分，因此不再提醒">板块已达标</span>' : ''}<div class="points-pill">${activity.points == null ? '—' : `+${activity.points}`}<small>${activity.points == null ? '' : '分'}</small></div></div>
+      <div class="activity-tags"><span class="section-tag ${activity.tone === 'orange' ? 'orange' : activity.tone === 'pink' ? 'pink' : ''}">${activity.section}</span>${isSectionSatisfied(activity) ? '<span class="done-tag" title="该板块积分已拿满，再报名不会增加积分，因此不再提醒">板块已达标</span>' : ''}<div class="points-pill">${activity.points == null ? '—' : `+${activity.points}`}<small>${activity.points == null ? '' : '分'}</small></div></div>
       <button class="register-button" data-id="${activity.id}">去报名 <span>↗</span></button>
     </article>`).join('');
   $('#emptyState').classList.toggle('hidden', visible.length > 0);
