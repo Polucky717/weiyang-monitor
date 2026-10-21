@@ -62,19 +62,23 @@ footer{display:flex;align-items:center;gap:22px;color:#afb7c0;font-size:10px;pad
 .nav-search::after{content:"";position:absolute;width:6px;height:1.5px;right:-4px;bottom:-1px;border-radius:2px;background:currentColor;transform:rotate(45deg);transform-origin:left center}
 .empty-icon{margin:0 0 9px}
 
-/* 已点过“去报名”的活动：淡化，并且不计入“待关注活动”。
-   只靠淡化表达状态是不够醒目的，所以曾经加过一个“已报名”标签；但那个标签
-   等于断言“你已经报名成功”，而后台能确认的只是“你点过那个按钮”——点开
-   报名页并不等于报了名，措辞过头了，因此标签已移除，这里只保留淡化。
-   用 opacity 而不是禁用属性，元素依旧可交互、可聚焦，只是视觉上退到后面。 */
-.activity-row.registered{opacity:.45}
-.activity-row.registered:hover,.activity-row.registered:focus-within{opacity:.75}
-.activity-row.registered .register-button{cursor:pointer}
 /* 所在板块积分已拿满的活动：不再计入“待关注活动”，所以视觉上也要退到后面。
    这里用比 .registered 更轻的淡化（.78 而不是 .45）—— 活动本身仍然完全可报名、
    可点击，只是不再催你，不该淡到像已经处理过一样。 */
 .activity-row.satisfied{opacity:.78}
 .activity-row.satisfied:hover,.activity-row.satisfied:focus-within{opacity:1}
+/* 已点过“去报名”的活动：淡化，并且不计入“待关注活动”。
+   只靠淡化表达状态是不够醒目的，所以曾经加过一个“已报名”标签；但那个标签
+   等于断言“你已经报名成功”，而后台能确认的只是“你点过那个按钮”——点开
+   报名页并不等于报了名，措辞过头了，因此标签已移除，这里只保留淡化。
+   用 opacity 而不是禁用属性，元素依旧可交互、可聚焦，只是视觉上退到后面。
+
+   ★ 必须放在 .satisfied **之后**：两者权重完全相同，权重相同时后写的生效。
+   写到前面的话，“既点过报名、板块又已达标”的行会被 .satisfied 的 .78 盖住，
+   点了“去报名”画面上看不出任何变化（实测反馈过这个问题）。 */
+.activity-row.registered{opacity:.45}
+.activity-row.registered:hover,.activity-row.registered:focus-within{opacity:.75}
+.activity-row.registered .register-button{cursor:pointer}
 /* 达标标记。用中性灰而不是绿色：绿色在这个界面里已经是“积分”的语义
    （见 .points-pill），这里表达的是“不必再做”，用灰更准确、也不抢注意力。 */
 .done-tag{font-size:9px;color:#8b95a3;background:#f2f4f7;border-radius:3px;padding:3px 5px;width:max-content;align-self:center;white-space:nowrap}
