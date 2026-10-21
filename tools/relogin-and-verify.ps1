@@ -159,16 +159,31 @@ if ($scanError) { Write-Host "  扫描请求出错：$scanError" -ForegroundColo
 
 $scanLog = Join-Path $root 'logs\scan.log'
 if (Test-Path -LiteralPath $scanLog) {
-  $tail = Get-Content -LiteralPath $scanLog -Encoding UTF8 -Tail 25
+  # 只取"最近一次后台启动之后"的日志来判定。
+  #
+  # 原来看 -Tail 25，结果**误报了 FAIL**：诊断输出本身就有 18 行以上，
+  # 而日志里上一次失败扫描留下的 6 行"您没有登陆"仍然在窗口内，
+  # 把这次成功的"板块数=5"挤出了窗口 —— 于是 gotBoards 为空、
+  # loginGone 又为假，脚本报 FAIL，但后台其实已经抓到了数据。
+  # 按启动标记切分才是正确口径：本次登录的成败只由本次会话的日志决定。
+  $lines = @(Get-Content -LiteralPath $scanLog -Encoding UTF8)
+  $start = -1
+  for ($i = $lines.Count - 1; $i -ge 0; $i--) {
+    if ($lines[$i] -match '后台已启动') { $start = $i; break }
+  }
+  $tail = if ($start -ge 0) { @($lines[$start..($lines.Count - 1)]) } else { @($lines | Select-Object -Last 25) }
   Write-Host ''
-  Write-Host '  --- logs\scan.log 末尾 ---' -ForegroundColor Yellow
+  Write-Host "  --- logs\scan.log 本次启动以来（共 $($tail.Count) 行）---" -ForegroundColor Yellow
   foreach ($line in $tail) { Write-Host "    $line" }
 
   $loginGone = -not ($tail | Where-Object { $_ -match '没有登[录陆]' })
   $gotBoards = $tail | Where-Object { $_ -match '\[积分页\].*板块数=([1-9]\d*)' }
+  $online = $tail | Where-Object { $_ -match '\[积分\] 板块合计=' }
   Write-Host ''
-  if ($gotBoards) {
+  if ($gotBoards -and $online) {
     Write-Host '  PASS —— 积分页抓到板块数据了，登录已恢复正常。' -ForegroundColor Green
+  } elseif ($gotBoards) {
+    Write-Host '  抓到板块数据了，但没看到积分合计那行，请把上面的日志发给开发者。' -ForegroundColor Yellow
   } elseif ($loginGone) {
     Write-Host '  积分页这次没有报"您没有登陆"，但也没抓到板块，请把上面的日志发给开发者。' -ForegroundColor Yellow
   } else {
