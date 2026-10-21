@@ -18,6 +18,14 @@ const SCORE_URL = 'https://weiyang.yuketang.cn/pro/trainingproject/my-score';
 const PREFERRED_PROFILE_DIR = process.env.WEIYANG_PROFILE_DIR || path.join(process.env.LOCALAPPDATA || '', 'WeiyangMonitor', 'browser-profile');
 const FALLBACK_PROFILE_DIR = path.join(os.tmpdir(), 'WeiyangMonitor', 'browser-profile');
 const LOGIN_MARKER = path.join(ROOT, '.weiyang-login-complete');
+// 登录态快照：把登录成功时的 cookie 与 localStorage 存成 JSON，每次扫描前恢复。
+//
+// 为什么要这个：站点的登录凭据**只存在于 cookie 里**（实测 localStorage 只有
+// _uuid / nhd / vuex / runtime_xtbz，没有任何令牌），而浏览器配置目录里
+// exit_type 是 "Crashed" —— 异常退出时 Chromium **不会保存会话 cookie**，
+// 于是登录态在重启后就丢了。用户问的"能不能保存登录信息用于重新登录"，
+// 能：保存的是登录态本身（不是密码，也不含密码），由浏览器自己导出与回填。
+const SESSION_PATH = path.join(ROOT, '.weiyang-session.json');
 let profileDir = PREFERRED_PROFILE_DIR;
 try {
   const savedLogin = JSON.parse(fs.readFileSync(LOGIN_MARKER, 'utf8'));
@@ -37,6 +45,13 @@ let monitorPage;
 // 实际启动的浏览器标识（Edge / Chromium）。登录与扫描必须是同一个浏览器，
 // 否则 Windows 下 cookie 解不开、登录态读不出来 —— 这个值要写进日志。
 let activeBrowserLabel = '';
+// 本次运行是否**确认过**登录有效（读到过积分页数据）。
+//
+// 为什么需要这个标志：巡检成功时要顺手刷新登录态快照（站点会轮换 csrftoken，
+// 快照越新越可能保持有效）。但如果巡检时登录已经失效，此刻的上下文里只有
+// csrftoken 这类非会话 cookie —— 用它覆盖快照，会把上一份**真正有效**的
+// 登录态毁掉，之后连回填都没得回填。所以只有确认已登录才允许刷新。
+let authenticatedThisSession = false;
 let scanRunning = false;
 let notificationTestRunning = false;
 
@@ -449,7 +464,96 @@ async function ensureContext(headless = true) {
   }
   if (!browserContext) throw lastLaunchError;
   monitorPage = browserContext.pages()[0] || await browserContext.newPage();
+  // 新上下文建好后，把上次保存的登录态回填进去。
+  // 失败不影响扫描：回填不了就照常跑，真掉登录时那条"登录已失效"通知会提醒用户。
+  await restoreSessionState(browserContext);
   return browserContext;
+}
+
+// 把当前上下文的登录态（cookie + localStorage）存到 SESSION_PATH。
+// 只存凭据本身，不含账号密码 —— 密码从来没有经过这个程序。
+async function saveSessionState(context, why) {
+  if (!context) return false;
+  // 巡检路径只有在确认登录有效时才刷新快照，避免用失效上下文覆盖掉好数据。
+  // 登录流程本身不受这个限制（它就是要保存刚登录的状态）。
+  if (why !== '登录完成' && !authenticatedThisSession) {
+    trace(`[登录态] 本次未确认登录有效，跳过刷新快照（避免覆盖掉已有的有效快照）`);
+    return false;
+  }
+  try {
+    const state = await context.storageState();
+    const cookieCount = (state.cookies || []).length;
+    const originCount = (state.origins || []).length;
+    // 一个 cookie 都没有时不要写：那多半是还没登录的空上下文，
+    // 写进去会把上一份好的登录态覆盖掉。
+    if (!cookieCount) return false;
+    // 会话 cookie 的判定：expires <= 0。
+    // 至少要有一个"站点签发的会话 cookie"才值得保存 —— 只有 csrftoken 这类
+    // 持久化标识时，说明登录态并不在这份 cookie 里，存了也没用。
+    const sessionCookies = (state.cookies || []).filter((cookie) => !(cookie.expires > 0));
+    fs.writeFileSync(SESSION_PATH, JSON.stringify({
+      savedAt: new Date().toISOString(),
+      why,
+      profileDir,
+      cookieNames: (state.cookies || []).map((cookie) => `${cookie.domain}|${cookie.name}`).sort(),
+      sessionCookieCount: sessionCookies.length,
+      state
+    }, null, 2), 'utf8');
+    trace(`[登录态] 已保存（${why}）：cookie ${cookieCount} 个（其中会话级 ${sessionCookies.length} 个），localStorage 来源 ${originCount} 个`);
+    return true;
+  } catch (error) {
+    trace(`[登录态] 保存失败（${why}）：${String(error && error.message || error)}`);
+    return false;
+  }
+}
+
+// 把保存过的登录态回填到新上下文。
+async function restoreSessionState(context) {
+  if (!context) return false;
+  let saved;
+  try {
+    saved = JSON.parse(fs.readFileSync(SESSION_PATH, 'utf8'));
+  } catch {
+    trace('[登录态] 没有可用的登录态快照（首次运行属正常）');
+    return false;
+  }
+  const state = saved && saved.state;
+  if (!state || !Array.isArray(state.cookies) || !state.cookies.length) {
+    trace('[登录态] 快照里没有 cookie，跳过回填');
+    return false;
+  }
+  try {
+    // Playwright 的 addCookies 接受 storageState 里的 cookie 形状（含 expires）。
+    // 注意 expires 为 -1 表示会话 cookie —— 回填后它同样只在本次运行内有效，
+    // 所以每次启动都要重新回填，这也正是本机制存在的意义。
+    await context.addCookies(state.cookies);
+  } catch (error) {
+    trace(`[登录态] 回填 cookie 失败：${String(error && error.message || error)}`);
+    return false;
+  }
+  // localStorage 要在页面脚本执行**之前**写进去，否则 SPA 启动时读不到，
+  // 会用默认值把站点配置覆盖掉。所以用 addInitScript 而不是页面里 evaluate。
+  let localStorageApplied = 0;
+  try {
+    for (const origin of (state.origins || [])) {
+      if (!origin || !origin.origin || !Array.isArray(origin.localStorage)) continue;
+      const entries = origin.localStorage
+        .filter((item) => item && typeof item.name === 'string')
+        .map((item) => [item.name, String(item.value == null ? '' : item.value)]);
+      if (!entries.length) continue;
+      localStorageApplied += entries.length;
+      await context.addInitScript((pairs) => {
+        try {
+          for (const [key, value] of pairs) window.localStorage.setItem(key, value);
+        } catch { /* 隐私模式等场景下写不进去，忽略 */ }
+      }, entries);
+    }
+  } catch (error) {
+    trace(`[登录态] 回填 localStorage 失败：${String(error && error.message || error)}`);
+  }
+  const savedAt = saved.savedAt || '未知时间';
+  trace(`[登录态] 已回填：cookie ${state.cookies.length} 个，localStorage ${localStorageApplied} 项（保存于 ${savedAt}）`);
+  return true;
 }
 
 async function loginFlow() {
@@ -467,9 +571,36 @@ async function loginFlow() {
   console.log('登录完成后回到终端按 Enter，后台会保存会话并关闭浏览器。');
   await waitForEnter();
   fs.writeFileSync(LOGIN_MARKER, JSON.stringify({ profileDir, completedAt: new Date().toISOString() }, null, 2), 'utf8');
+  // 先把登录态导出成快照，再关浏览器。
+  //
+  // 顺序不能反：上下文一关就取不到 storageState 了。而这一步是**最可靠的**
+  // 保存方式 —— 配置目录里 exit_type 是 "Crashed" 时，Chromium 不会把会话
+  // cookie 写到磁盘，只依赖配置目录就会丢登录态；导出成快照则不受影响。
+  await saveSessionState(context, '登录完成');
   await context.close();
+  // 等浏览器进程真正退出再继续。
+  // 关键：会话 cookie 是浏览器**在退出过程中**写盘的（正常退出才写），
+  // 立刻往下走会在它写完之前就启动新实例，等于白等 —— 这也正是配置目录里
+  // 出现 exit_type="Crashed" 的原因之一。
+  await waitForBrowserExit();
   browserContext = undefined;
   console.log(`会话已保存到 ${profileDir}`);
+  console.log(`登录态快照：${SESSION_PATH}`);
+}
+
+// 等浏览器进程退出，最多等 8 秒。进程句柄拿不到时静默跳过（不代表失败）。
+async function waitForBrowserExit() {
+  const browser = browserContext && browserContext.browser && browserContext.browser();
+  if (!browser) { await new Promise((r) => setTimeout(r, 1500)); return; }
+  try {
+    const closed = new Promise((resolve) => {
+      browser.once('disconnected', resolve);
+      browserContext.once('close', resolve);
+    });
+    await Promise.race([closed, new Promise((r) => setTimeout(r, 8000))]);
+    // 断开之后再多给一点时间，让 cookie 落盘。
+    await new Promise((r) => setTimeout(r, 1200));
+  } catch { /* 忽略 */ }
 }
 
 function waitForEnter() {
@@ -1752,6 +1883,13 @@ async function scan() {
       profile: mergedProfile
     };
     persistState();
+    // 走到这里说明本次确实读到了站点数据 = 登录有效。
+    // 记下这个事实，并顺手把登录态快照刷新一份（站点会轮换 csrftoken）。
+    // 标志必须在 saveSessionState 之前置位，否则刷新会被自己挡掉。
+    authenticatedThisSession = true;
+    if (scorePageUsable) {
+      saveSessionState(browserContext, '巡检成功').catch(() => {});
+    }
     if (newCount > 0) {
       const firstNew = activitiesWithRegistration.find((item) => needsAttention(item) && !previousIds.has(`${item.section}|${item.type}|${item.title}`));
       // 提醒窗口的“立刻报名”会回调 /api/activity/open 并附上活动标题，

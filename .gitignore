@@ -5,6 +5,9 @@ node_modules/
 .weiyang-state.json.tmp
 .weiyang-state.json.bak
 .weiyang-state.json.bak2
+# 登录态快照（cookie + localStorage）：等价于登录凭据，绝不能入库或上传
+.weiyang-session.json
+.weiyang-session.json.tmp
 monitor.config.json
 debug.log
 startup.log
