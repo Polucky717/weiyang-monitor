@@ -1770,8 +1770,31 @@ async function scan() {
       connectedToExternalEdge = false;
     }
     // 扫描失败时保留上一次成功抓取的活动、积分和个人信息，只更新后台错误状态。
+    const wasAuthRequired = lastState.backend?.authRequired === true;
     lastState = { ...lastState, backend: { ...lastState.backend, status: error.authRequired ? 'auth_required' : 'error', lastScan: lastState.backend.lastScan, authRequired: Boolean(error.authRequired), error: error.message, scanSuccessful: Boolean(lastState.backend.scanSuccessful), codeVersion: CODE_VERSION } };
     trace(`扫描失败：${error.message}`);
+    // 登录失效**必须主动提醒**。
+    //
+    // 以前只把状态改成 auth_required 就结束了，没有任何通知 —— 于是登录态
+    // 静默失效，用户只能靠自己发现界面上的积分不再更新（实测就是这个后果：
+    // 会话掉了之后没人知道）。这类"需要用户动手才能恢复"的故障，
+    // 一定要推到他面前。
+    //
+    // 只在"从正常变成失效"这一刻提醒一次：否则每 30 分钟一轮询就弹一次，
+    // 很快就会被用户当成噪音无视。
+    if (error.authRequired && !wasAuthRequired) {
+      notifyWindows(
+        '未央观察站：登录已失效',
+        '监测已暂停（积分不再更新）。请双击 relogin-monitor.cmd 重新登录。',
+        // 不能用 0：windows-notify.ps1 里是 [Math]::Max(1, $DurationSeconds)，
+        // 传 0 会变成只显示 1 秒，等于没提醒。
+        20,
+        '',
+        ''
+      ).then((result) => {
+        if (!result.ok) console.error(`Windows 登录失效通知失败：${result.error}`);
+      });
+    }
     return lastState;
   } finally {
     scanRunning = false;

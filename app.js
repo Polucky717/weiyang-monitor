@@ -196,7 +196,7 @@ function renderActivities() {
     <article class="activity-row${activity.registeredAt ? ' registered' : ''}${isSectionSatisfied(activity) ? ' satisfied' : ''}">
       <div class="activity-icon ${activity.tone}">${iconFor(activity)}</div>
       <div class="activity-main"><strong>${activity.title}</strong><p>${activity.description || ''}</p></div>
-      <div class="activity-tags"><span class="section-tag ${activity.tone === 'orange' ? 'orange' : activity.tone === 'pink' ? 'pink' : ''}">${activity.section}</span>${isSectionSatisfied(activity) ? '<span class="done-tag" title="该板块积分已拿满，再报名不会增加积分，因此不再提醒">板块已达标</span>' : ''}<div class="points-pill">${activity.points == null ? '—' : `+${activity.points}`}<small>${activity.points == null ? '' : '分'}</small></div></div>
+      <div class="activity-tags"><span class="section-tag ${activity.tone === 'orange' ? 'orange' : activity.tone === 'pink' ? 'pink' : ''}">${activity.section}</span>${activity.registeredAt ? '<span class="registered-tag" title="你已经点过报名，不再计入待关注活动">已报名</span>' : ''}${isSectionSatisfied(activity) ? '<span class="done-tag" title="该板块积分已拿满，再报名不会增加积分，因此不再提醒">板块已达标</span>' : ''}<div class="points-pill">${activity.points == null ? '—' : `+${activity.points}`}<small>${activity.points == null ? '' : '分'}</small></div></div>
       <button class="register-button" data-id="${activity.id}">去报名 <span>↗</span></button>
     </article>`).join('');
   $('#emptyState').classList.toggle('hidden', visible.length > 0);
@@ -382,12 +382,27 @@ $('#modalSubmit').addEventListener('click', () => {
         if (popup) { popup.focus(); opened = true; } else { blocked = true; }
       }
       closeRegistration();
+      // 立刻在本地的活动对象上标好"已报名"并重绘，不依赖后台往返。
+      //
+      // 为什么不能只靠 syncRemoteState()：它是异步的，而且一旦后台不可用
+      // （例如登录态失效）它会整段失败，界面上就完全看不出"我已经报过名了"。
+      // 而"这次点击确实记到后台了"这件事这里已经知道（result.registered），
+      // 所以先本地反映，再由 syncRemoteState 用后台数据纠正。
+      // 只有后台**明确**回了 registered 才本地标记。
+      //
+      // 不能用 `!== false`：后台不可用时前端会走上面的回退分支，那个 result 里
+      // 根本没有 registered 字段，`undefined !== false` 成立，就会把一次其实
+      // 没记到后台的点击显示成"已报名" —— 那是谎报状态。
+      if (result.registered === true) {
+        activity.registeredAt = activity.registeredAt || new Date().toISOString();
+        renderActivities();
+      }
       if (blocked) {
         showToast('报名页面已尝试打开', '若未看到新窗口，请允许本站弹出窗口后重新点击');
       } else {
         showToast('已打开报名页面', '报名页已在浏览器中打开，请在新窗口中确认报名信息');
       }
-      // 后台已把该活动记为“已报名”，立刻同步一次状态，让它马上从
+      // 后台已把该活动记为“已报名”，再同步一次状态与后台对齐，让它马上从
       // “值得关注的活动”和“待关注活动”计数里消失，不必等下一次轮询。
       syncRemoteState();
     })
