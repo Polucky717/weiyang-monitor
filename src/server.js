@@ -1921,6 +1921,9 @@ async function scan() {
     // 只在"从正常变成失效"这一刻提醒一次：否则每 30 分钟一轮询就弹一次，
     // 很快就会被用户当成噪音无视。
     if (error.authRequired && !wasAuthRequired) {
+      // 记一行日志。原来通知成功/失败都不落盘，事后完全无法判断它到底弹过没有 ——
+      // 而"用户没看到通知"和"通知没发出去"是两种不同的故障，必须能区分。
+      trace('[通知] 登录失效提醒：即将弹出 Windows 通知（只在状态从正常转为失效时弹一次）');
       notifyWindows(
         '未央观察站：登录已失效',
         '监测已暂停（积分不再更新）。请双击 relogin-monitor.cmd 重新登录。',
@@ -1930,9 +1933,18 @@ async function scan() {
         '',
         ''
       ).then((result) => {
-        if (!result.ok) console.error(`Windows 登录失效通知失败：${result.error}`);
+        if (result.ok) trace('[通知] 登录失效提醒：已弹出');
+        else {
+          trace(`[通知] 登录失效提醒：失败 ${result.error}`);
+          console.error(`Windows 登录失效通知失败：${result.error}`);
+        }
       });
     }
+    // 失败状态也要落盘。
+    //
+    // 否则磁盘上一直留着上一次成功的 online：后台重启后会把这份陈旧状态读回来，
+    // 界面上写着"在线"、日志里却在 401，用户看到的与真实情况相反。
+    try { fs.writeFileSync(STATE_PATH, JSON.stringify(lastState, null, 2), 'utf8'); } catch { }
     return lastState;
   } finally {
     scanRunning = false;

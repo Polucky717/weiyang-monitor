@@ -82,3 +82,10 @@ footer{display:flex;align-items:center;gap:22px;color:#afb7c0;font-size:10px;pad
 /* 达标标记。用中性灰而不是绿色：绿色在这个界面里已经是“积分”的语义
    （见 .points-pill），这里表达的是“不必再做”，用灰更准确、也不抢注意力。 */
 .done-tag{font-size:9px;color:#8b95a3;background:#f2f4f7;border-radius:3px;padding:3px 5px;width:max-content;align-self:center;white-space:nowrap}
+/* 监测状态的异常色。原来状态点恒为绿色、状态文字也恒为绿色，即使登录已经失效、
+   积分早就停止更新，视觉上仍与“一切正常”完全一样 —— 用户因此把问题当成缓存 bug。
+   需要用户动手处理（重新登录）用琥珀色；只是在显示旧数据，用中性灰。 */
+.stat-symbol.warn{color:#e0a33e}
+.stat-symbol.idle{color:#a4adb9}
+.status-value.warn{color:#c9852a}
+.status-value.idle{color:#8b95a3}

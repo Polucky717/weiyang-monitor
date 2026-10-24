@@ -14,6 +14,9 @@ let remoteConnected = false;
 let lastNewCount = 0;
 let backendState = '未连接';
 let dataReady = false;
+// 最近一次成功抓取的时间。界面在“显示的是旧数据”时必须告诉用户数据有多旧，
+// 否则用户只能猜（实测有人把它当成缓存 bug）。
+let lastScanAt = null;
 let stateSyncTimer;
 // 已达标（积分拿满）的板块，来自后端 backend.sectionsSatisfied。
 // 后台只在积分页确实抓到时才给这个字段，避免拿过期数据误判。
@@ -138,6 +141,7 @@ function applyRemoteState(state) {
   remoteConnected = state.backend?.status === 'online';
   backendState = state.backend?.status || 'unknown';
   lastNewCount = Number(state.backend?.newCount || 0);
+  lastScanAt = state.backend?.lastScan || null;
   satisfiedSections = new Set(Array.isArray(state.backend?.sectionsSatisfied) ? state.backend.sectionsSatisfied : []);
   // 启动扫描尚未完成或临时失败时，也要显示磁盘缓存/上一次成功结果。
   dataReady = remoteConnected || Boolean(
@@ -240,8 +244,31 @@ function renderProfile() {
   $('#profileRecentPoints').textContent = profile.recentPoints == null ? '—' : `+${profile.recentPoints}`;
   $('#profileRecentActivity').textContent = profile.recentActivity || '暂无已抓取记录';
   $('#dashboardTotalPoints').innerHTML = profile.totalPoints == null ? '—<span class="unit">分</span>' : `${profile.totalPoints}<span class="unit">分</span>`;
-  $('#monitorStatusValue').textContent = remoteConnected ? '在线' : (dataReady ? '缓存' : '等待');
-  $('#monitorStatusDetail').textContent = remoteConnected ? '已同步个人主页' : (backendState === 'auth_required' ? '需要重新登录' : (dataReady ? '显示最近一次抓取结果' : '尚未连接本地后台'));
+  // 状态文案必须说清“为什么不是在线”。
+  // 原来只要后台不是 online 就笼统写“缓存”，而最常见的原因其实是**登录失效**——
+  // 用户看到“缓存”会以为程序缓存出错了，完全不会想到该去重新登录（实测踩过）。
+  // 所以登录失效要单独说，并直接给出该做什么。
+  const authExpired = backendState === 'auth_required';
+  const statusTone = remoteConnected ? '' : (authExpired ? 'warn' : 'idle');
+  const symbol = $('#monitorStatusSymbol');
+  if (symbol) symbol.className = 'stat-symbol ' + (remoteConnected ? 'green' : (authExpired ? 'warn' : 'idle'));
+  $('#monitorStatusValue').className = 'stat-value status-value' + (statusTone ? ` ${statusTone}` : '');
+  $('#monitorStatusValue').textContent = remoteConnected ? '在线'
+    : (authExpired ? '登录失效' : (dataReady ? '缓存' : '等待'));
+  $('#monitorStatusDetail').textContent = remoteConnected ? '已同步个人主页'
+    : (authExpired ? `双击 relogin-monitor.cmd 重新登录${staleNote()}`
+      : (dataReady ? `显示最近一次抓取结果${staleNote()}` : '尚未连接本地后台'));
+}
+
+// 数据有多旧：登录失效或显示旧数据时，必须让用户看到具体时间，
+// 否则“缓存”两个字无从判断。
+function staleNote() {
+  if (!lastScanAt) return '';
+  const at = new Date(lastScanAt);
+  if (Number.isNaN(at.getTime())) return '';
+  const minutes = Math.max(0, Math.round((Date.now() - at.getTime()) / 60000));
+  const when = minutes < 60 ? `${minutes} 分钟前` : (minutes < 1440 ? `${Math.round(minutes / 60)} 小时前` : `${Math.round(minutes / 1440)} 天前`);
+  return `（数据停在 ${when}）`;
 }
 
 function openRegistration(id) {
