@@ -60,6 +60,7 @@ const FILES = [
   'tools/test-activity-dim.js',
   'tools/test-status-label.js',
   'tools/test-total-goal.js',
+  'tools/test-stat-cards.js',
   'tools/verify-session-restore.ps1',
 
   // 运行脚本（PowerShell / cmd）

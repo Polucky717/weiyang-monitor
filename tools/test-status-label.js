@@ -30,7 +30,7 @@ const els = {};
 // 否则写入和读取会落在两个不同的“元素”上，断言全空（我在这里踩过一次）。
 function el(selector) {
   const id = String(selector).replace(/^#/, '');
-  if (!els[id]) els[id] = { id, textContent: '', innerHTML: '', className: '', classList: { toggle() {}, add() {}, remove() {} } };
+  if (!els[id]) els[id] = { id, textContent: '', innerHTML: '', className: '', style: {}, classList: { toggle() {}, add() {}, remove() {} } };
   return els[id];
 }
 
@@ -48,12 +48,16 @@ const sandbox = {
   backendState: '未连接',
   dataReady: false,
   lastScanAt: null,
+  totalPointTarget: 25,
   profile: { name: '张三', avatar: '', totalPoints: 16, recentPoints: 2, recentActivity: '某活动' },
   $: el
 };
 vm.createContext(sandbox);
+// renderProfile 里会调用 renderTotalGoal（渲染积分目标进度），
+// 少抽这一个函数就会 ReferenceError —— 整个测试文件直接崩掉。
 vm.runInContext([
   extract('staleNote'),
+  extract('renderTotalGoal'),
   extract('renderProfile'),
   'this.__render = renderProfile;'
 ].join('\n'), sandbox);
