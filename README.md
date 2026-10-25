@@ -2,7 +2,7 @@
 
 一个带本地持久化登录后台的活动积分监测器。直接打开 `index.html` 可以体验界面；要抓取真实未央雨课堂数据，请按下面的后台步骤运行。
 
-<img width="2813" height="1639" alt="屏幕截图 2026-10-10 000647" src="https://github.com/user-attachments/assets/312d33f2-e822-4412-89ab-a8d7ef21c2a6" />
+<img width="2786" height="1492" alt="image" src="https://github.com/user-attachments/assets/0db1ac48-bd43-4312-8076-cd412e6adbb0" />
 
 
 ## 首次运行真实监测
