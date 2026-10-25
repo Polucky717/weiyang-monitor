@@ -89,3 +89,10 @@ footer{display:flex;align-items:center;gap:22px;color:#afb7c0;font-size:10px;pad
 .stat-symbol.idle{color:#a4adb9}
 .status-value.warn{color:#c9852a}
 .status-value.idle{color:#8b95a3}
+/* 总积分目标的进度条（“当前累计积分”卡片里）。
+   用细条而不只是文字：25 分是整体目标，要能一眼看出还差多少。
+   达标后整条变绿、提示改成“已达成”，不必自己算。 */
+.goal-track{height:4px;border-radius:9px;background:#eceff3;overflow:hidden;margin:6px 0 7px}
+.goal-track i{display:block;height:100%;width:0;border-radius:9px;background:#7387ee;transition:width .35s ease}
+.goal-track.reached i{background:#40b77b}
+.stat-foot.goal-reached{color:#40b77b}

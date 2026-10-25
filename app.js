@@ -17,6 +17,10 @@ let dataReady = false;
 // 最近一次成功抓取的时间。界面在“显示的是旧数据”时必须告诉用户数据有多旧，
 // 否则用户只能猜（实测有人把它当成缓存 bug）。
 let lastScanAt = null;
+// 所有板块加起来的**总积分目标**（后台配置项 totalPointTarget，默认 25）。
+// 与“板块达标”（satisfiedSections）是两套口径：那个决定还要不要提醒，
+// 这个只用于在“当前累计积分”卡片上显示整体进度。
+let totalPointTarget = 25;
 let stateSyncTimer;
 // 已达标（积分拿满）的板块，来自后端 backend.sectionsSatisfied。
 // 后台只在积分页确实抓到时才给这个字段，避免拿过期数据误判。
@@ -142,6 +146,9 @@ function applyRemoteState(state) {
   backendState = state.backend?.status || 'unknown';
   lastNewCount = Number(state.backend?.newCount || 0);
   lastScanAt = state.backend?.lastScan || null;
+  // 目标值只在后台给出合法正数时才覆盖本地默认值，避免把界面写成 NaN。
+  const target = Number(state.backend?.totalPointTarget);
+  if (Number.isFinite(target) && target > 0) totalPointTarget = target;
   satisfiedSections = new Set(Array.isArray(state.backend?.sectionsSatisfied) ? state.backend.sectionsSatisfied : []);
   // 启动扫描尚未完成或临时失败时，也要显示磁盘缓存/上一次成功结果。
   dataReady = remoteConnected || Boolean(
@@ -244,6 +251,7 @@ function renderProfile() {
   $('#profileRecentPoints').textContent = profile.recentPoints == null ? '—' : `+${profile.recentPoints}`;
   $('#profileRecentActivity').textContent = profile.recentActivity || '暂无已抓取记录';
   $('#dashboardTotalPoints').innerHTML = profile.totalPoints == null ? '—<span class="unit">分</span>' : `${profile.totalPoints}<span class="unit">分</span>`;
+  renderTotalGoal();
   // 状态文案必须说清“为什么不是在线”。
   // 原来只要后台不是 online 就笼统写“缓存”，而最常见的原因其实是**登录失效**——
   // 用户看到“缓存”会以为程序缓存出错了，完全不会想到该去重新登录（实测踩过）。
@@ -258,6 +266,42 @@ function renderProfile() {
   $('#monitorStatusDetail').textContent = remoteConnected ? '已同步个人主页'
     : (authExpired ? `双击 relogin-monitor.cmd 重新登录${staleNote()}`
       : (dataReady ? `显示最近一次抓取结果${staleNote()}` : '尚未连接本地后台'));
+}
+
+// “当前累计积分”卡片上的目标进度。
+//
+// 用户的整体要求是**所有板块加起来的积分达到 25**。这个数和每个板块自己的阈值
+// （pointThresholds，比如多彩未央 1、其余 5）是两件事：把每个板块都拿满也只有
+// 1+5+5+5+5=21 分，所以 25 必须单独作为一个总体目标显示，不能靠板块达标推导。
+function renderTotalGoal() {
+  const target = totalPointTarget;
+  const bar = $('#goalTrack');
+  const fill = $('#goalFill');
+  const hint = $('#goalHint');
+  const symbol = $('#goalSymbol');
+  const current = Number.isFinite(profile.totalPoints) ? profile.totalPoints : null;
+
+  if (current == null) {
+    if (bar) { bar.className = 'goal-track'; bar.classList.remove('reached'); }
+    if (fill) fill.style.width = '0%';
+    if (hint) { hint.textContent = `目标 ${target} 分`; hint.className = 'stat-foot muted'; }
+    return;
+  }
+
+  const reached = current >= target;
+  const remaining = Math.max(0, target - current);
+  // 超目标也要画满（100%），不能让宽度超过容器
+  const percent = Math.max(0, Math.min(100, Math.round((current / target) * 100)));
+
+  if (bar) bar.className = `goal-track${reached ? ' reached' : ''}`;
+  if (fill) fill.style.width = `${percent}%`;
+  if (hint) {
+    hint.textContent = reached
+      ? `已达成 ${target} 分目标`
+      : `目标 ${target} 分 · 还差 ${remaining} 分`;
+    hint.className = `stat-foot${reached ? ' goal-reached' : ' muted'}`;
+  }
+  if (symbol) symbol.className = `stat-symbol ${reached ? 'green' : 'idle'}`;
 }
 
 // 数据有多旧：登录失效或显示旧数据时，必须让用户看到具体时间，

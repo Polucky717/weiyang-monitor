@@ -20,5 +20,6 @@
   "pointThresholds": {
     "多彩未央": 1,
     "default": 5
-  }
+  },
+  "totalPointTarget": 25
 }

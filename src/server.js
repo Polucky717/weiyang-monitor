@@ -84,7 +84,9 @@ const CODE_VERSION = (() => {
 })();
 
 let lastState = {
-  backend: { status: 'starting', lastScan: null, authRequired: false, error: null, newCount: 0, scanSuccessful: false },
+  // totalPointTarget 放在 backend 里：成功时会重建 backend，失败时用 [...lastState.backend]
+  // 展开保留，从磁盘缓存恢复时也被默认值兜住 —— 三个路径下前端都能拿到这个目标。
+  backend: { status: 'starting', lastScan: null, authRequired: false, error: null, newCount: 0, scanSuccessful: false, totalPointTarget: totalPointTarget() },
   activities: [],
   sections: [],
   points: [],
@@ -142,7 +144,12 @@ function readConfig() {
       profileRecentPoints: '.recent-points, .last-points, [class*=recentPoint], [class*=lastPoint]',
       profileRecentActivityList: '.recent-activities, .activity-history, [class*=activityHistory], [class*=recentActivities]'
     },
-    pointThresholds: { 多彩未央: 1, default: 5 }
+    pointThresholds: { 多彩未央: 1, default: 5 },
+    // 所有板块加起来的**总积分目标**。它和 pointThresholds 是两件事：
+    // pointThresholds 管"某个板块拿满没"，决定该板块的活动还要不要提醒；
+    // 这个数是用户的整体目标（25 分），只用于在面板上显示进度，
+    // 不参与提醒判断 —— 达标板块之和（1+5+5+5+5=21）本来就小于 25。
+    totalPointTarget: 25
   };
   try { return { ...example, ...JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')) }; } catch { return example; }
 }
@@ -163,6 +170,13 @@ function numberFrom(text) {
 
 function thresholdFor(section) {
   return Number(config.pointThresholds?.[section] ?? config.pointThresholds?.default ?? 5);
+}
+
+// 总积分目标（所有板块之和）。配置缺失或非法时回落到 25：
+// 这是界面上要显示的进度基准，绝不能出现 NaN 或 0 —— 那会让"还差几分"变成乱码。
+function totalPointTarget() {
+  const value = Number(config.totalPointTarget);
+  return Number.isFinite(value) && value > 0 ? value : 25;
 }
 
 // 板块积分是否已达标（current >= target）。
@@ -1876,7 +1890,7 @@ async function scan() {
       trace(`[达标] 已满分板块：${list}（因此不再提醒其中的 ${skipped} 个活动）`);
     }
     lastState = {
-      backend: { status: 'online', lastScan: now(), authRequired: false, error: null, newCount, scanSuccessful: true, sectionsSatisfied: [...satisfied], codeVersion: CODE_VERSION },
+      backend: { status: 'online', lastScan: now(), authRequired: false, error: null, newCount, scanSuccessful: true, sectionsSatisfied: [...satisfied], totalPointTarget: totalPointTarget(), codeVersion: CODE_VERSION },
       ...data,
       activities: activitiesWithRegistration,
       points: effectivePoints,
