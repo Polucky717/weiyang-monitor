@@ -18,6 +18,11 @@ const REPO = process.argv[2];
 if (!REPO || !REPO.includes('/')) { console.error('用法: node publish-to-github.js <owner/repo> [tag]'); process.exit(1); }
 const TAG = process.argv[3] || 'v1.0.0';
 const ZIP = 'weiyang-monitor-github.zip';
+// 默认不推送 README.md：这份文件在 GitHub 网页上被手工维护过（改截图、改段落），
+// 而本脚本是**整份清单覆盖式**上传 —— 一推就会把网页上的改动悄悄回滚掉，
+// 用户只有在打开仓库时才会发现。需要刻意覆盖时才显式加 --include-readme。
+// 不推送 README 不影响 Release：zip 附件仍按本地 README 打包，用户下载到手是完整的。
+const INCLUDE_README = process.argv.includes('--include-readme');
 
 const ROOT = path.join(__dirname, '..');
 
@@ -163,6 +168,15 @@ function uploadAsset(uploadUrl, name, filePath) {
     }
   }
   if (!fs.existsSync(path.join(ROOT, ZIP))) { console.error('缺少压缩包: ' + ZIP); process.exit(1); }
+  // README.md 默认跳过（见文件开头的说明）。这里就地过滤，后面创建 blob、
+  // 建 tree、统计个数都用同一份，避免"清单说推了 N 个、实际只推了 N-1 个"。
+  if (!INCLUDE_README) {
+    const at = FILES.indexOf('README.md');
+    if (at >= 0) FILES.splice(at, 1);
+    console.log('跳过 README.md：它在 GitHub 网页上手工维护过，本次不覆盖（要覆盖请加 --include-readme）');
+  } else {
+    console.log('注意：本次会覆盖 GitHub 上的 README.md（--include-readme）');
+  }
   console.log('待推送文件: ' + FILES.length + ' 个');
   console.log('Release 附件: ' + ZIP + '  (' + (fs.statSync(ZIP).size / 1024).toFixed(1) + ' KB)');
 
