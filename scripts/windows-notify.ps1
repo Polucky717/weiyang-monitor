@@ -238,25 +238,58 @@ $form.Controls.Add($header)
 $timer = New-Object Windows.Forms.Timer
 $timer.Interval = 500
 $expiry = [System.Diagnostics.Stopwatch]::StartNew()
-$lifetimeSeconds = [Math]::Max(1, $DurationSeconds)
-$timer.Add_Tick({
-  if ($expiry.Elapsed.TotalSeconds -ge $lifetimeSeconds) {
-    $timer.Stop()
-    $form.Close()
-  }
-})
+# DurationSeconds <= 0 表示**不自动关闭**，必须由用户手动关窗口（或点“立刻报名”）。
+#
+# 为什么要有这个模式：原来固定 60 秒自动关闭，用户不在电脑前（实测去吃饭/锁屏）
+# 回来时窗口早已消失，而“新活动”只会提醒一次，于是这个提醒就永久丢了。
+# 提醒窗口是“需要你动手”的通知，宁可一直挡在屏幕上，也不能悄悄消失。
+# 传正数时仍然是原来的自动关闭行为（登录失效提醒用 20 秒）。
+$autoClose = $DurationSeconds -gt 0
+$lifetimeSeconds = $DurationSeconds
+$closedByTimer = $false
+if ($autoClose) {
+  $timer.Add_Tick({
+    if ($expiry.Elapsed.TotalSeconds -ge $lifetimeSeconds) {
+      $script:closedByTimer = $true
+      $timer.Stop()
+      $form.Close()
+    }
+  })
+}
 $form.Add_Shown({
+  # 强制显示窗口（关键的一步）。
+  #
+  # 后台用 spawn(windowsHide: true) 启动本脚本，进程带 CREATE_NO_WINDOW + SW_HIDE：
+  # 好处是没有那个空的黑色控制台，坏处是**进程的第一次 ShowWindow 会被启动信息里的
+  # “隐藏”覆盖掉** —— 于是窗口"已显示"（Shown 事件照常触发、日志照常写）却根本看不见。
+  # 实测截屏确认过：窗口进程活着、日志写着已显示，屏幕上什么都没有。
+  # 这里再显式调一次 ShowWindow(SW_SHOW)：第二次调用不再被启动信息覆盖，窗口真正出现。
+  try {
+    if (-not ('WeiyangWindow.Native' -as [type])) {
+      Add-Type -Namespace WeiyangWindow -Name Native -MemberDefinition '[DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow); [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);'
+    }
+    [void][WeiyangWindow.Native]::ShowWindow($form.Handle, 5)
+    [void][WeiyangWindow.Native]::SetForegroundWindow($form.Handle)
+    Write-Trace '已强制显示窗口（SW_SHOW）'
+  } catch {
+    Write-Trace ('强制显示窗口失败：' + $_.Exception.Message)
+  }
   $form.Activate()
   $form.TopMost = $true
   $form.BringToFront()
   $expiry.Restart()
-  $timer.Start()
-  Write-Trace ("窗口已显示，计划显示 " + $lifetimeSeconds + " 秒")
+  if ($autoClose) {
+    $timer.Start()
+    Write-Trace ("窗口已显示，计划显示 " + $lifetimeSeconds + " 秒")
+  } else {
+    Write-Trace '窗口已显示，不自动关闭（等用户手动关闭）'
+  }
 })
 $form.Add_FormClosed({
   $timer.Stop()
   $timer.Dispose()
-  Write-Trace ("窗口关闭，实际显示 " + [Math]::Round($expiry.Elapsed.TotalSeconds, 1) + " 秒")
+  $how = if ($closedByTimer) { '自动超时' } else { '手动关闭或点了立刻报名' }
+  Write-Trace ("窗口关闭（" + $how + "），实际显示 " + [Math]::Round($expiry.Elapsed.TotalSeconds, 1) + " 秒")
   $font.Dispose(); $smallFont.Dispose(); $captionFont.Dispose(); $valueFont.Dispose()
 })
 

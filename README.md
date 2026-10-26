@@ -2,7 +2,7 @@
 
 一个带本地持久化登录后台的活动积分监测器。直接打开 `index.html` 可以体验界面；要抓取真实未央雨课堂数据，请按下面的后台步骤运行。
 
-<img width="2786" height="1492" alt="image" src="https://github.com/user-attachments/assets/0db1ac48-bd43-4312-8076-cd412e6adbb0" />
+<img width="2813" height="1639" alt="屏幕截图 2026-10-10 000647" src="https://github.com/user-attachments/assets/312d33f2-e822-4412-89ab-a8d7ef21c2a6" />
 
 
 ## 首次运行真实监测
@@ -83,15 +83,10 @@ node tools\install-autostart.js --check
 如果你已经在 Edge 中登录了未央雨课堂，使用下面的方式让监测器复用该登录态：
 
 1. 保存工作并完全退出所有 Edge 窗口。
-2. 在项目目录执行：
-   
-```powershell   
-powershell -ExecutionPolicy Bypass -File .\scripts\start-edge-monitor.ps1
-```
+2. 在项目目录执行 `powershell -ExecutionPolicy Bypass -File .\scripts\start-edge-monitor.ps1`。脚本会优先复制 `Profile 1`；如果你的登录账号在其他配置中，可加参数，例如 `-ProfileDirectory Default`。
+3. 脚本把配置复制到监测器专用目录（原 Edge 配置保持不变），再以远程调试模式启动 Edge 和监测后台。
 
-脚本会优先复制 `Profile 1`；如果你的登录账号在其他配置中，可加参数，例如 `-ProfileDirectory Default`。
-
-这个流程会复制 Edge 已保存的登录态。首次复制后，新实例中的后续登录状态会保存在监测器专用目录。如果你刚在原 Edge 重新登录，需要用 `-RefreshProfile` 更新副本，脚本连接的是 `https://weiyang.yuketang.cn/pro/portal/home/`。
+这个流程不会读取或保存密码，只复制 Edge 已保存的登录态。首次复制后，新实例中的后续登录状态会保存在监测器专用目录。如果你刚在原 Edge 重新登录，需要用 `-RefreshProfile` 更新副本。脚本连接的是 `https://weiyang.yuketang.cn/pro/portal/home/`，不会从其他页面补造数据。
 
 监测网页现在使用独立的 Edge 配置打开，关闭 `http://127.0.0.1:8787/` 只会关闭界面，不会关闭后台使用的登录会话或停止扫描。后台仍通过监测器专用 Edge 调试实例持续抓取数据。
 
@@ -100,8 +95,6 @@ powershell -ExecutionPolicy Bypass -File .\scripts\start-edge-monitor.ps1
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\run-connected-monitor.ps1
 ```
-
-如果雨课堂登录过期，双击`relogin-monitor.cmd`，按照提示重新登录即可。
 
 ## 使用 Chrome
 

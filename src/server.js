@@ -242,7 +242,11 @@ function notifyWindows(title, message, durationSeconds = 60, activityUrl = '', a
       '-Port', String(PORT),
       '-DurationSeconds', String(durationSeconds)
     ], {
-      windowsHide: false,
+      // 必须为 true。为 false 时 powershell.exe 会连带创建一个**空的黑色控制台窗口**，
+      // 每次提醒都糊在用户眼前（实测用户以为那是报错窗口，直接把它关掉，
+      // 结果连带把提醒窗口一起带走了 —— 提醒等于没弹）。
+      // windowsHide 只隐藏控制台，脚本随后用 WinForms 创建的提醒窗口照常显示。
+      windowsHide: true,
       detached: false,
       stdio: ['ignore', 'ignore', stderrFd]
     });
@@ -1883,7 +1887,13 @@ async function scan() {
     const satisfied = scorePageUsable ? satisfiedSections(effectivePoints) : new Set();
     const isDone = (item) => satisfied.has(item.section);
     const needsAttention = (item) => item.points > 0 && !item.registeredAt && !isDone(item);
-    const newCount = hasBaseline ? activitiesWithRegistration.filter((item) => needsAttention(item) && !previousIds.has(`${item.section}|${item.type}|${item.title}`)).length : 0;
+    const freshItems = activitiesWithRegistration.filter((item) => needsAttention(item) && !previousIds.has(`${item.section}|${item.type}|${item.title}`));
+    const newCount = hasBaseline ? freshItems.length : 0;
+    // 活动列表的抓取以前完全没有日志，于是“新活动为什么没提醒”无从查证 ——
+    // 实测漏掉一次提醒，只能靠翻 notify.log + notify-trace.log 才还原出真相。
+    // 现在每轮都记下：抓到几个、几个待关注、哪几个是本轮新出现的。
+    trace(`[活动] 抓到 ${activitiesWithRegistration.length} 个可报名活动，待关注 ${activitiesWithRegistration.filter(needsAttention).length} 个`);
+    trace(`[活动] 本轮新出现 ${newCount} 个：${freshItems.map((item) => `${item.section}/${item.title}`).join('、') || '无'}${hasBaseline ? '' : '（首轮不判定新活动）'}`);
     if (satisfied.size) {
       const list = [...satisfied].join('、');
       const skipped = activitiesWithRegistration.filter((item) => item.points > 0 && !item.registeredAt && isDone(item)).length;
@@ -1905,12 +1915,21 @@ async function scan() {
       saveSessionState(browserContext, '巡检成功').catch(() => {});
     }
     if (newCount > 0) {
-      const firstNew = activitiesWithRegistration.find((item) => needsAttention(item) && !previousIds.has(`${item.section}|${item.type}|${item.title}`));
-      // 提醒窗口的“立刻报名”会回调 /api/activity/open 并附上活动标题，
-      // 因此从提醒窗口报名的活动同样会被记为“已报名”。优先给它详情页地址。
-      notifyWindows('未央雨课堂活动提醒', notificationMessage(firstNew), 60, firstNew.detailUrl || firstNew.url || '', firstNew.title || '').then((result) => {
-        if (!result.ok) console.error(`Windows 活动通知失败：${result.error}`);
+      const firstNew = freshItems[0];
+      // 第三个参数传 0 = 窗口**不自动关闭**，必须由用户手动关掉。
+      // 原来固定 60 秒自动关闭：用户离开电脑一会儿，回来时窗口早已消失，
+      // 而新活动只会提醒一次，于是这条提醒永久丢失（实测 14:53 弹了、14:54 就没了，
+      // 用户 5 小时后才发现活动，以为"根本没弹"）。宁可一直挡屏，也不能悄悄消失。
+      trace(`[通知] 活动提醒：即将弹出（${firstNew.section} / ${firstNew.title}），窗口不自动关闭`);
+      notifyWindows('未央雨课堂活动提醒', notificationMessage(firstNew), 0, firstNew.detailUrl || firstNew.url || '', firstNew.title || '').then((result) => {
+        if (result.ok) trace('[通知] 活动提醒：窗口已启动（会一直显示到你手动关闭）');
+        else {
+          trace(`[通知] 活动提醒：启动失败 ${result.error}`);
+          console.error(`Windows 活动通知失败：${result.error}`);
+        }
       });
+    } else {
+      trace('[通知] 活动提醒：本轮没有新活动，不弹窗');
     }
     return lastState;
   } catch (error) {
@@ -1941,8 +1960,8 @@ async function scan() {
       notifyWindows(
         '未央观察站：登录已失效',
         '监测已暂停（积分不再更新）。请双击 relogin-monitor.cmd 重新登录。',
-        // 不能用 0：windows-notify.ps1 里是 [Math]::Max(1, $DurationSeconds)，
-        // 传 0 会变成只显示 1 秒，等于没提醒。
+        // 20 = 20 秒后自动关闭。注意 0 现在的含义是“永不自动关闭”（活动提醒用），
+        // 登录失效这条仍用 20 秒：避免一个必须重新登录才能消掉的窗口长期占屏。
         20,
         '',
         ''
@@ -2074,7 +2093,9 @@ async function createWindowsNotificationTest() {
   } catch (error) {
     throw new Error(`无法从未央雨课堂活动报名页实时抓取：${error.message}`);
   }
-  const notification = await notifyWindows('未央雨课堂活动提醒测试', notificationMessage(activity), 60, activity.url || '', activity.title || '');
+  // 测试入口也用 0（不自动关闭），让测试弹出的窗口与真实提醒完全一致 ——
+  // 否则测试时它 60 秒自己关，看起来正常，真实场景却可能有别的问题。
+  const notification = await notifyWindows('未央雨课堂活动提醒测试', notificationMessage(activity), 0, activity.url || '', activity.title || '');
   if (!notification.ok) throw new Error(`活动已抓取，但 Windows 通知窗口启动失败：${notification.error}`);
   return activity;
 }
