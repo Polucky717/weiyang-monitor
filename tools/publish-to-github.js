@@ -75,6 +75,7 @@ const FILES = [
   'tools/test-total-goal.js',
   'tools/test-stat-cards.js',
   'tools/test-notify-behavior.js',
+  'tools/test-publish-safety.js',
   'tools/verify-session-restore.ps1',
 
   // 运行脚本（PowerShell / cmd）
@@ -223,7 +224,11 @@ function uploadAsset(uploadUrl, name, filePath) {
   // —— 3. 建 tree
   console.log('');
   console.log('=== 3. 创建 tree ===');
-  const treeRes = await api('POST', '/repos/' + REPO + '/git/trees', { tree });
+  // base_tree 不能省：Git Data API 建出来的 tree 是**完整快照**，不传 base_tree
+  // 就等于"仓库里只剩下面这些文件"，清单之外的一切（README.md、用户后来在网页上
+  // 加的任何文件）都会被删除。实测踩过一次：为了不覆盖 README 而把它从清单里去掉，
+  // 结果直接把 README 从仓库里删掉了。带上 base_tree 才能做到"只增改、不删除"。
+  const treeRes = await api('POST', '/repos/' + REPO + '/git/trees', { tree, base_tree: baseCommit });
   console.log('  tree: ' + treeRes.sha);
 
   // —— 4. 建 commit（以占位/现有提交为父，保证是正常前进而非改写历史）
