@@ -16,7 +16,7 @@ if (!TOKEN) { console.error('缺少 GH_TOKEN 环境变量'); process.exit(1); }
 
 const REPO = process.argv[2];
 if (!REPO || !REPO.includes('/')) { console.error('用法: node publish-to-github.js <owner/repo> [tag]'); process.exit(1); }
-const TAG = process.argv[3] || 'v1.0.0';
+const TAG = process.argv[3] || 'v1.1.0';
 const ZIP = 'weiyang-monitor-github.zip';
 // 默认不推送 README.md：这份文件在 GitHub 网页上被手工维护过（改截图、改段落），
 // 而本脚本是**整份清单覆盖式**上传 —— 一推就会把网页上的改动悄悄回滚掉，
@@ -235,7 +235,7 @@ function uploadAsset(uploadUrl, name, filePath) {
   console.log('');
   console.log('=== 4. 创建 commit ===');
   const commit = await api('POST', '/repos/' + REPO + '/git/commits', {
-    message: '未央成长活动提醒：活动积分监测器 v1.0.0\n\n'
+    message: `未央成长活动提醒：活动积分监测器 ${TAG}\n\n`
       + '- 后台用 Playwright 连接无头 Edge/Chrome，定时抓取未央雨课堂活动与个人积分\n'
       + '- 前端展示正在报名中的活动、可获得积分与累计积分，支持报名跳转与桌面通知\n'
       + '- 板块图标：矢量线稿 + 手绘线稿位图（绵羊/演讲台/放大镜）\n'
@@ -291,7 +291,7 @@ function uploadAsset(uploadUrl, name, filePath) {
     release = await api('POST', '/repos/' + REPO + '/releases', {
       tag_name: TAG,
       target_commitish: commit.sha,
-      name: '未央成长活动提醒 v1.0.0',
+      name: '未央成长活动提醒 ' + TAG,
       body: notes,
       draft: false,
       prerelease: false

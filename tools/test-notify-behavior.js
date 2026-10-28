@@ -43,7 +43,8 @@ check('0 被解释为“不自动关闭”', /\$autoClose\s*=\s*\$DurationSecond
 check('计时器只在自动关闭模式下启动', /\$autoClose\s*\)\s*\{\s*\$timer\.Start\(\)/.test(ps1));
 check('不再有把 0 变成 1 秒的旧写法', !/\[Math\]::Max\(1,\s*\$DurationSeconds\)/.test(ps1));
 check('日志区分“计划显示”与“不自动关闭”', /不自动关闭（等用户手动关闭）/.test(ps1));
-check('关闭时记录原因（自动超时 / 手动）', /自动超时/.test(ps1) && /手动关闭或点了立刻报名/.test(ps1));
+check('关闭时记录原因（自动超时 / 手动 / 稍后提醒）',
+  /自动超时/.test(ps1) && /设置了稍后提醒/.test(ps1) && /手动关闭（确认\/关闭按钮）/.test(ps1));
 
 console.log('');
 console.log('=== 4. 登录失效提醒：不自动关闭，且会反复提醒 ===');
@@ -51,11 +52,33 @@ console.log('=== 4. 登录失效提醒：不自动关闭，且会反复提醒 ==
 // 用户不在的时候照样错过（和活动提醒同一个教训）。
 check('登录失效提醒传 0（不自动关闭）', /'未央观察站：登录已失效'[\s\S]{0,700}?\n\s*0,/.test(server));
 check('定义了重复提醒间隔（3 小时）', /const AUTH_REMIND_INTERVAL_MS = 3 \* 60 \* 60 \* 1000;/.test(server));
-check('首次失效立刻提醒、之后按间隔补提醒', /firstAuthFailure \|\| authRemindDue/.test(server));
-check('重复提醒受“上次提醒时间”限制', /Date\.now\(\) - lastAuthRemind >= AUTH_REMIND_INTERVAL_MS/.test(server));
-check('提醒后把时间写回状态（重启也不会重复轰炸）', /authRemindedAt: Date\.now\(\)/.test(server));
-check('默认状态里有 authRemindedAt 字段', /authRemindedAt: null/.test(server));
+// 节奏统一由 authNextRemindAt 一个时间点驱动：没弹过立刻弹，弹过写到 +3 小时，
+// 用户点“稍后提醒我”则改写成他选的时间。用两个字段容易互相打架。
+check('由单一时间点 authNextRemindAt 驱动', /Date\.now\(\) >= Number\(lastState\.backend\?\.authNextRemindAt \|\| 0\)/.test(server));
+check('弹过之后写“现在 + 间隔”', /authNextRemindAt: next/.test(server) && /const next = Date\.now\(\) \+ AUTH_REMIND_INTERVAL_MS;/.test(server));
+check('默认状态里有 authNextRemindAt 字段', /authNextRemindAt: null/.test(server));
 check('文案指向 relogin-monitor.cmd', server.includes('请双击 relogin-monitor.cmd 重新登录'));
+
+console.log('');
+console.log('=== 4b. 登录失效窗口的两个按钮 + 悬停时间菜单 ===');
+check('窗口脚本有 -Mode 参数（activity / auth）', /\[ValidateSet\('activity', 'auth'\)\]\[string\]\$Mode = 'activity'/.test(ps1));
+check('server 给登录失效提醒传 auth', /'auth'\s*\n\s*\)\.then/.test(server));
+check('“确认”按钮复用关闭逻辑', /\$close\.Text = '确认'/.test(ps1));
+check('登录失效时不显示“查看目前积分/立刻报名”', /\$points\.Visible = \$false/.test(ps1) && /\$signup\.Visible = \$false/.test(ps1));
+check('有“稍后提醒我”按钮', /稍后提醒我/.test(ps1));
+check('悬停展开时间菜单', /\$snooze\.Add_MouseEnter\(\{/.test(ps1));
+check('菜单有 15/30/60/120 分钟四档', /@\(15, '15 分钟后（默认）'\)/.test(ps1) && /@\(30, '30 分钟后'\)/.test(ps1) && /@\(60, '1 小时后'\)/.test(ps1) && /@\(120, '2 小时后'\)/.test(ps1));
+check('直接点是 15 分钟', /\$snoozeDefaultMinutes = 15/.test(ps1) && /\$snooze\.Add_Click\(\{ Invoke-Snooze \$snoozeDefaultMinutes \}\)/.test(ps1));
+check('稍后提醒会 POST 到 /api/auth/snooze', /api\/auth\/snooze/.test(ps1) && /api\/auth\/snooze/.test(server));
+check('不再写“怎么点稍后提醒”的操作说明行', !ps1.includes('点“稍后提醒我”可推迟'));
+
+console.log('');
+console.log('=== 4c. 后台的稍后提醒接口 ===');
+check('默认 15 分钟常量', /const AUTH_SNOOZE_DEFAULT_MINUTES = 15;/.test(server));
+check('非法/缺省值回落默认', /Number\.isFinite\(wanted\) && wanted >= 1 && wanted <= 24 \* 60/.test(server));
+check('写入下次提醒时间并落盘', /authNextRemindAt: remindAt/.test(server) && /persistState\(\)/.test(server));
+check('到点由定时器触发而不是等下一轮扫描', /scheduleAuthReminder\(remindAt\)/.test(server));
+check('已重新登录时忽略稍后提醒', /当前并非失效状态，已忽略/.test(server));
 
 console.log('');
 console.log('=== 5. 测试入口与真实提醒行为一致 ===');
@@ -79,5 +102,64 @@ check('windows-notify.ps1 是 UTF-8 带 BOM',
 check('脚本里确实有中文（所以 BOM 是必需的）', /[\u4e00-\u9fa5]/.test(ps1));
 
 console.log('');
-console.log('  通过 ' + pass + ' / 失败 ' + fail);
-process.exit(fail === 0 ? 0 : 1);
+console.log('=== 8. 稍后提醒接口的真实行为（直接执行 server.js 里那段源码）===');
+// 前面都是"源码里有没有这句话"，这一段是把 /api/auth/snooze 的处理代码原样切出来，
+// 用假的 request/response 真跑一遍：默认值、越界回落、是否安排定时器都要对。
+const vm = require('vm');
+const snoozeStart = server.indexOf("if (url.pathname === '/api/auth/snooze'");
+const snoozeEnd = server.indexOf("if (url.pathname === '/api/test-notification'");
+const snoozeBlock = server.slice(snoozeStart, snoozeEnd);
+
+async function runSnooze(body, authRequired) {
+  const calls = { scheduled: [], sent: null, persisted: 0, logs: [] };
+  const sandbox = {
+    url: { pathname: '/api/auth/snooze' },
+    request: { method: 'POST' },
+    response: { stub: true },
+    readRequestBody: async () => body,
+    lastState: { backend: { authRequired } },
+    persistState: () => { calls.persisted += 1; },
+    logAccess: (tag, line) => calls.logs.push(tag + ' ' + line),
+    scheduleAuthReminder: (at) => calls.scheduled.push(at),
+    trace: (m) => calls.logs.push(m),
+    sendJson: (response, status, payload) => { calls.sent = { status, payload }; },
+    AUTH_SNOOZE_DEFAULT_MINUTES: 15,
+    JSON, Number, Date, Math, Boolean, console
+  };
+  vm.createContext(sandbox);
+  await vm.runInContext('(async () => {\n' + snoozeBlock + '\n})()', sandbox);
+  return { calls, backend: sandbox.lastState.backend };
+}
+
+(async () => {
+  const before = Date.now();
+  const empty = await runSnooze('', true);
+  check('请求体为空时按 15 分钟', empty.calls.sent?.payload?.minutes === 15, String(empty.calls.sent?.payload?.minutes));
+  check('空请求也返回 ok', empty.calls.sent?.payload?.ok === true);
+  check('写入了下次提醒时间', typeof empty.backend.authNextRemindAt === 'number');
+  check('睡了状态（persistState 被调用）', empty.calls.persisted > 0);
+  check('安排了定时器', empty.calls.scheduled.length === 1);
+
+  const thirty = await runSnooze(JSON.stringify({ minutes: 30 }), true);
+  check('按请求的 30 分钟生效', thirty.calls.sent?.payload?.minutes === 30);
+  check('下次提醒时间≈现在+30 分钟',
+    Math.abs(thirty.backend.authNextRemindAt - (Date.now() + 30 * 60000)) < 5000,
+    String(thirty.backend.authNextRemindAt - Date.now()));
+
+  const zero = await runSnooze(JSON.stringify({ minutes: 0 }), true);
+  check('0 分钟非法，回落到 15', zero.calls.sent?.payload?.minutes === 15);
+
+  const huge = await runSnooze(JSON.stringify({ minutes: 5000 }), true);
+  check('超过一天回落到 15', huge.calls.sent?.payload?.minutes === 15);
+
+  const garbage = await runSnooze('不是 JSON', true);
+  check('请求体不是 JSON 时回落到 15', garbage.calls.sent?.payload?.minutes === 15);
+
+  const healthy = await runSnooze(JSON.stringify({ minutes: 30 }), false);
+  check('登录已恢复时不安排提醒', healthy.calls.scheduled.length === 0);
+  check('登录已恢复时仍然落盘', healthy.calls.persisted > 0);
+
+  console.log('');
+  console.log('  通过 ' + pass + ' / 失败 ' + fail);
+  process.exit(fail === 0 ? 0 : 1);
+})();

@@ -5,7 +5,10 @@
   [string]$ActivityTitle = '',
   [int]$Port = 8787,
   [int]$DurationSeconds = 60,
-  [string]$TraceLog = ''
+  [string]$TraceLog = '',
+  # activity = 新活动提醒（按钮：立刻报名 / 查看目前积分）
+  # auth     = 登录失效提醒（按钮：确认 / 稍后提醒我，后者可悬停选时间）
+  [ValidateSet('activity', 'auth')][string]$Mode = 'activity'
 )
 
 # 把执行轨迹写进日志文件。提醒窗口一旦弹不出来，事后无法从任何地方查证，
@@ -24,7 +27,7 @@ function Write-Trace([string]$message) {
     Add-Content -Path $tracePath -Encoding UTF8 -Value ("[" + $stamp + "] " + $message)
   } catch { }
 }
-Write-Trace ("启动 pid=" + $PID + " title=" + $Title + " duration=" + $DurationSeconds)
+Write-Trace ("启动 pid=" + $PID + " mode=" + $Mode + " title=" + $Title + " duration=" + $DurationSeconds)
 
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
@@ -67,6 +70,11 @@ $eyebrow.Font = $smallFont
 $eyebrow.ForeColor = $accent
 $activityTitle = ($Message -split "`r?`n" | Where-Object { $_ -match '^活动[：:]' } | Select-Object -First 1) -replace '^活动[：:]\s*', ''
 if ([string]::IsNullOrWhiteSpace($activityTitle)) { $activityTitle = '发现一项新活动' }
+# 登录失效提醒的标题是固定的：这时候"活动名"没有意义，用户要一眼看出是登录出了问题。
+if ($Mode -eq 'auth') {
+  $eyebrow.Text = '未央雨课堂  /  登录状态'
+  $activityTitle = '需要重新登录'
+}
 $headline = New-Object Windows.Forms.Label
 $headline.Location = New-Object Drawing.Point(25, 42)
 $headline.Size = New-Object Drawing.Size(615, 48)
@@ -190,6 +198,69 @@ try {
 })
 $footer.Controls.AddRange(@($close, $points, $signup))
 
+if ($Mode -eq 'auth') {
+  # 登录失效提醒只给两个动作：确认（我知道了）/ 稍后提醒我（推迟再提示）。
+  # “确认”直接复用已有的 $close，只改文字，避免再造一套关闭逻辑；
+  # “查看目前积分 / 立刻报名”在这种状态下没有意义，直接隐藏（Visible=$false
+  # 的控件不参与 FlowLayoutPanel 排版，所以不会留空位）。
+  $close.Text = '确认'
+  $close.Size = New-Object Drawing.Size(96, 40)
+  $points.Visible = $false
+  $signup.Visible = $false
+
+  $snoozeDefaultMinutes = 15
+  $script:snoozePending = $false
+
+  $snooze = New-Object Windows.Forms.Button
+  $snooze.Text = '稍后提醒我 ▾'
+  $snooze.Size = New-Object Drawing.Size(150, 40)
+  $snooze.Font = $font
+  $snooze.FlatStyle = 'Flat'
+  $snooze.FlatAppearance.BorderColor = $line
+  $snooze.BackColor = [Drawing.Color]::White
+  $snooze.ForeColor = $ink
+
+  # 悬停展开的时间菜单。放在按钮上方：按钮贴着窗口底部，往下弹会被屏幕边缘截掉。
+  $snoozeMenu = New-Object Windows.Forms.ContextMenuStrip
+  $snoozeMenu.ShowImageMargin = $false
+  foreach ($option in @(@(15, '15 分钟后（默认）'), @(30, '30 分钟后'), @(60, '1 小时后'), @(120, '2 小时后'))) {
+    $item = New-Object Windows.Forms.ToolStripMenuItem([string]$option[1])
+    $item.Tag = [int]$option[0]
+    $item.Add_Click({ Invoke-Snooze ([int]$this.Tag) })
+    [void]$snoozeMenu.Items.Add($item)
+  }
+
+  # 把选中的分钟数发给本地后台：后台据此把“下次提醒时间”推到他选的时刻，
+  # 并用定时器在到点时精确再弹一次。只改状态是不够的 —— 扫描半小时一轮，
+  # 用户选 15 分钟却要等最多 30 分钟才提醒，按钮就等于没生效。
+  function Invoke-Snooze([int]$minutes) {
+    if ($script:snoozePending) { return }
+    $script:snoozePending = $true
+    $snooze.Enabled = $false
+    $snooze.Text = '正在设置…'
+    try {
+      $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes((@{ minutes = $minutes } | ConvertTo-Json -Compress))
+      Invoke-RestMethod -Method Post -Uri ('http://127.0.0.1:' + $Port + '/api/auth/snooze') -Body $bodyBytes -ContentType 'application/json; charset=utf-8' -TimeoutSec 5 | Out-Null
+      Write-Trace ('稍后提醒：已请求推迟 ' + $minutes + ' 分钟')
+    } catch {
+      Write-Trace ('稍后提醒：请求失败 ' + $_.Exception.Message)
+    }
+    $script:closedBySnooze = $true
+    $form.Close()
+  }
+
+  $snooze.Add_MouseEnter({
+    if ($snoozeMenu.Visible) { return }
+    $size = $snoozeMenu.GetPreferredSize((New-Object Drawing.Size(0, 0)))
+    $offset = if ($size.Height -gt 0) { - ($size.Height + 6) } else { -150 }
+    $snoozeMenu.Show($snooze, (New-Object Drawing.Point(0, $offset)))
+  })
+  # 直接点按钮 = 用默认的 15 分钟（用户要求：不选择就按 15 分钟算）。
+  $snooze.Add_Click({ Invoke-Snooze $snoozeDefaultMinutes })
+
+  $footer.Controls.Add($snooze)
+}
+
 $rows = New-Object 'System.Collections.Generic.List[object]'
 $descriptionLines = New-Object 'System.Collections.Generic.List[string]'
 foreach ($lineText in ($Message -split "`r?`n")) {
@@ -199,7 +270,13 @@ foreach ($lineText in ($Message -split "`r?`n")) {
   elseif ($descriptionLines.Count -gt 0) { $descriptionLines.Add($lineText.Trim()) }
 }
 if ($descriptionLines.Count -gt 0) { $rows.Add(@('项目简介', ($descriptionLines -join "`r`n"))) }
-if ($rows.Count -eq 0) { $rows.Add(@('活动信息', $Message.Trim())) }
+if ($Mode -eq 'auth') {
+  # 登录失效时的正文是固定的两行说明，不解析活动信息 —— 那时候活动数据本来就已经过期了。
+  # 不写“怎么点稍后提醒”这种操作说明：按钮和悬停菜单本身就说明了用法。
+  $rows.Clear()
+  $rows.Add(@('当前状态', '登录已失效，监测已暂停，积分不会再更新。'))
+  $rows.Add(@('怎么恢复', '双击项目目录里的 relogin-monitor.cmd，按提示重新登录即可。'))
+} elseif ($rows.Count -eq 0) { $rows.Add(@('活动信息', $Message.Trim())) }
 
 $y = 18
 $captionFont = New-Object Drawing.Font('Microsoft YaHei', 9)
@@ -247,6 +324,9 @@ $expiry = [System.Diagnostics.Stopwatch]::StartNew()
 $autoClose = $DurationSeconds -gt 0
 $lifetimeSeconds = $DurationSeconds
 $closedByTimer = $false
+# 用 $script: 写：这个变量是在事件处理器 / 函数里赋值的，不带前缀会变成局部变量，
+# FormClosed 里读到的永远是 $false。
+$script:closedBySnooze = $false
 if ($autoClose) {
   $timer.Add_Tick({
     if ($expiry.Elapsed.TotalSeconds -ge $lifetimeSeconds) {
@@ -288,7 +368,7 @@ $form.Add_Shown({
 $form.Add_FormClosed({
   $timer.Stop()
   $timer.Dispose()
-  $how = if ($closedByTimer) { '自动超时' } else { '手动关闭或点了立刻报名' }
+  $how = if ($closedByTimer) { '自动超时' } elseif ($script:closedBySnooze) { '设置了稍后提醒' } else { '手动关闭（确认/关闭按钮）' }
   Write-Trace ("窗口关闭（" + $how + "），实际显示 " + [Math]::Round($expiry.Elapsed.TotalSeconds, 1) + " 秒")
   $font.Dispose(); $smallFont.Dispose(); $captionFont.Dispose(); $valueFont.Dispose()
 })

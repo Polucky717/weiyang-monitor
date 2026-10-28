@@ -89,10 +89,13 @@ const CODE_VERSION = (() => {
 // 扫描是半小时一轮，那样会很快变成噪音，最后被彻底无视。
 const AUTH_REMIND_INTERVAL_MS = 3 * 60 * 60 * 1000;
 
+// 用户点“稍后提醒我”却没挑时间时用的默认值；与提醒窗口菜单里的“15 分钟后（默认）”一致。
+const AUTH_SNOOZE_DEFAULT_MINUTES = 15;
+
 let lastState = {
   // totalPointTarget 放在 backend 里：成功时会重建 backend，失败时用 [...lastState.backend]
   // 展开保留，从磁盘缓存恢复时也被默认值兜住 —— 三个路径下前端都能拿到这个目标。
-  backend: { status: 'starting', lastScan: null, authRequired: false, error: null, newCount: 0, scanSuccessful: false, totalPointTarget: totalPointTarget(), authRemindedAt: null },
+  backend: { status: 'starting', lastScan: null, authRequired: false, error: null, newCount: 0, scanSuccessful: false, totalPointTarget: totalPointTarget(), authNextRemindAt: null },
   activities: [],
   sections: [],
   points: [],
@@ -226,7 +229,7 @@ function isActivityRegistered(item) {
   return Boolean(item && item.registeredAt);
 }
 
-function notifyWindows(title, message, durationSeconds = 60, activityUrl = '', activityTitle = '') {
+function notifyWindows(title, message, durationSeconds = 60, activityUrl = '', activityTitle = '', mode = 'activity') {
   const script = path.join(ROOT, 'scripts', 'windows-notify.ps1');
   if (!fs.existsSync(script)) return Promise.resolve({ ok: false, error: '找不到 Windows 通知脚本。' });
   if (process.env.WEIYANG_DISABLE_WINDOWS_NOTIFY === '1') return Promise.resolve({ ok: false, error: 'Windows 通知已通过配置关闭。' });
@@ -245,6 +248,9 @@ function notifyWindows(title, message, durationSeconds = 60, activityUrl = '', a
       '-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-File', script,
       '-Title', title, '-Message', message, '-ActivityUrl', activityUrl || '',
       '-ActivityTitle', activityTitle || '',
+      // activity = 新活动提醒（立刻报名）；auth = 登录失效提醒（确认 / 稍后提醒我）。
+      // 两种提醒的按钮和行为完全不同，所以窗口要按这个参数分叉。
+      '-Mode', mode,
       '-Port', String(PORT),
       '-DurationSeconds', String(durationSeconds)
     ], {
@@ -287,6 +293,55 @@ function notifyWindows(title, message, durationSeconds = 60, activityUrl = '', a
     // 进程能活过这一小段时间就说明窗口已经建起来了（脚本要等窗口关闭才退出）。
     timer = setTimeout(() => finish({ ok: true }), 1200);
   });
+}
+
+// 把当前状态写回磁盘。失败状态尤其要落盘：否则磁盘上一直留着上一次成功的 online，
+// 后台重启后会把这份陈旧状态读回来，界面上写着"在线"、日志里却在 401。
+function persistState() {
+  try { fs.writeFileSync(STATE_PATH, JSON.stringify(lastState, null, 2), 'utf8'); } catch { }
+}
+
+let authRemindTimer = null;
+
+// 登录失效提醒的弹窗动作。扫描路径和"稍后提醒"定时器都走这里，保证行为只有一份。
+function remindAuthRequired(reason) {
+  const next = Date.now() + AUTH_REMIND_INTERVAL_MS;
+  lastState = { ...lastState, backend: { ...lastState.backend, authNextRemindAt: next } };
+  persistState();
+  // 记一行日志。原来通知成功/失败都不落盘，事后完全无法判断它到底弹过没有 ——
+  // 而"用户没看到通知"和"通知没发出去"是两种不同的故障，必须能区分。
+  trace(`[通知] 登录失效提醒：即将弹出（${reason}，窗口不自动关闭；下次最晚 ${new Date(next).toLocaleString()}）`);
+  notifyWindows(
+    '未央观察站：登录已失效',
+    '监测已暂停（积分不再更新）。请双击 relogin-monitor.cmd 重新登录。',
+    // 0 = 永不自动关闭。这条提醒必须等到用户处理，不能自己消失。
+    0,
+    '',
+    '',
+    // 'auth' 让窗口显示“确认 / 稍后提醒我”，而不是“立刻报名”。
+    'auth'
+  ).then((result) => {
+    if (result.ok) trace('[通知] 登录失效提醒：已弹出（不自动关闭）');
+    else {
+      trace(`[通知] 登录失效提醒：失败 ${result.error}`);
+      console.error(`Windows 登录失效通知失败：${result.error}`);
+    }
+  });
+}
+
+// 用户点了“稍后提醒我”之后，按他选的时间精确地再弹一次。
+//
+// 为什么不能只改 authNextRemindAt 等下一轮扫描：扫描是半小时一轮，用户选 15 分钟
+// 却要等最多 30 分钟才提醒，等于按钮没起作用。这里用定时器在到点时直接触发。
+function scheduleAuthReminder(atMs) {
+  if (authRemindTimer) { clearTimeout(authRemindTimer); authRemindTimer = null; }
+  const delay = Math.max(0, Number(atMs) - Date.now());
+  authRemindTimer = setTimeout(() => {
+    authRemindTimer = null;
+    if (!lastState.backend?.authRequired) return;   // 已经重新登录，不再打扰
+    remindAuthRequired('稍后提醒到点');
+  }, delay);
+  trace(`[通知] 登录失效提醒：已安排 ${Math.round(delay / 1000)} 秒后再提醒`);
 }
 
 // The monitor browser runs headless (see start-edge-monitor.ps1 -NoDashboard),
@@ -1957,42 +2012,17 @@ async function scan() {
     // 会话掉了之后没人知道）。这类"需要用户动手才能恢复"的故障，
     // 一定要推到他面前。
     //
-    // 提醒策略：
-    //   1) 刚失效时立刻弹一次；
-    //   2) 窗口不自动关闭（0）—— 人不在时，回来还看得见，和活动提醒一致；
-    //   3) 只要还失效，每 3 小时再弹一次：用户很可能顺手关掉窗口就不管了，
-    //      只弹一次等于没有第二次机会。频率不能跟着扫描（半小时一轮）
-    //      走，否则会被当成噪音。这里用 authRemindedAt 落盘，重启后也不会重复轰炸。
-    const lastAuthRemind = Number(lastState.backend?.authRemindedAt || 0);
-    const firstAuthFailure = !wasAuthRequired;
-    const authRemindDue = Date.now() - lastAuthRemind >= AUTH_REMIND_INTERVAL_MS;
-    if (error.authRequired && (firstAuthFailure || authRemindDue)) {
-      // 记一行日志。原来通知成功/失败都不落盘，事后完全无法判断它到底弹过没有 ——
-      // 而"用户没看到通知"和"通知没发出去"是两种不同的故障，必须能区分。
-      trace(firstAuthFailure
-        ? '[通知] 登录失效提醒：即将弹出（首次失效，窗口不会自动关闭，之后每 3 小时再提醒）'
-        : '[通知] 登录失效提醒：仍在失效状态，距上次提醒已超过 3 小时，再弹一次');
-      lastState = { ...lastState, backend: { ...lastState.backend, authRemindedAt: Date.now() } };
-      notifyWindows(
-        '未央观察站：登录已失效',
-        '监测已暂停（积分不再更新）。请双击 relogin-monitor.cmd 重新登录。',
-        // 0 = 永不自动关闭。这条提醒必须等到用户处理，不能自己消失。
-        0,
-        '',
-        ''
-      ).then((result) => {
-        if (result.ok) trace('[通知] 登录失效提醒：已弹出（不自动关闭）');
-        else {
-          trace(`[通知] 登录失效提醒：失败 ${result.error}`);
-          console.error(`Windows 登录失效通知失败：${result.error}`);
-        }
-      });
+    // 提醒节奏全部由 backend.authNextRemindAt 这一个时间点驱动：
+    //   · 刚失效：该字段为空 → 立刻弹；
+    //   · 弹过之后：写到“现在 + 3 小时”，所以不会每轮扫描都弹（半小时一轮会变噪音）；
+    //   · 用户点了“稍后提醒我”：窗口把该字段改成他选的时间，到点再弹（由定时器触发，
+    //     不等下一轮扫描，否则 15 分钟的承诺会变成“最多 30 分钟才提醒”）。
+    // 窗口本身不自动关闭（duration 传 0），人不在时回来还看得见。
+    if (error.authRequired && Date.now() >= Number(lastState.backend?.authNextRemindAt || 0)) {
+      remindAuthRequired(wasAuthRequired ? '按时补提醒' : '首次失效');
     }
     // 失败状态也要落盘。
-    //
-    // 否则磁盘上一直留着上一次成功的 online：后台重启后会把这份陈旧状态读回来，
-    // 界面上写着"在线"、日志里却在 401，用户看到的与真实情况相反。
-    try { fs.writeFileSync(STATE_PATH, JSON.stringify(lastState, null, 2), 'utf8'); } catch { }
+    persistState();
     return lastState;
   } finally {
     scanRunning = false;
@@ -2191,6 +2221,24 @@ const server = http.createServer(async (request, response) => {
       logAccess('activity-open', `error ${Date.now() - startedAt}ms title="${requestedTitle || encodedTitle}" error=${String(error.message).replace(/\s+/g, ' ')}`);
       return sendJson(response, 409, { error: error.message });
     }
+  }
+  if (url.pathname === '/api/auth/snooze' && request.method === 'POST') {
+    // 提醒窗口的“稍后提醒我”会调用这里。minutes 缺省/非法时用 15 分钟（与窗口里的默认项一致），
+    // 上限一天 —— 登录失效是必须处理的故障，不该允许无限期推迟。
+    let minutes = AUTH_SNOOZE_DEFAULT_MINUTES;
+    try {
+      const raw = await readRequestBody(request);
+      const wanted = Number(raw ? JSON.parse(raw).minutes : NaN);
+      if (Number.isFinite(wanted) && wanted >= 1 && wanted <= 24 * 60) minutes = Math.round(wanted);
+    } catch { /* 请求体为空或不是合法 JSON：按默认值处理 */ }
+    const remindAt = Date.now() + minutes * 60 * 1000;
+    lastState = { ...lastState, backend: { ...lastState.backend, authNextRemindAt: remindAt } };
+    persistState();
+    logAccess('auth-snooze', `minutes=${minutes} remindAt=${new Date(remindAt).toISOString()} authRequired=${Boolean(lastState.backend?.authRequired)}`);
+    // 只在确实还处于失效状态时才真的安排提醒；否则等于给一个已恢复的状态制造噪音。
+    if (lastState.backend?.authRequired) scheduleAuthReminder(remindAt);
+    else trace('[通知] 登录失效提醒：收到稍后提醒请求，但当前并非失效状态，已忽略');
+    return sendJson(response, 200, { ok: true, minutes, remindAt });
   }
   if (url.pathname === '/api/test-notification' && request.method === 'POST') {
     try { return sendJson(response, 200, await testWindowsNotification()); }
