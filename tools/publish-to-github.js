@@ -23,6 +23,38 @@ const ZIP = 'weiyang-monitor-github.zip';
 // 用户只有在打开仓库时才会发现。需要刻意覆盖时才显式加 --include-readme。
 // 不推送 README 不影响 Release：zip 附件仍按本地 README 打包，用户下载到手是完整的。
 const INCLUDE_README = process.argv.includes('--include-readme');
+// 只更新 Release 说明，不产生新提交、不动附件。改完说明用这个开关即可，
+// 否则为了改几行字要重新推一遍全部文件、多出一个没有意义的提交。
+const NOTES_ONLY = process.argv.includes('--notes-only');
+
+// Release 说明（发布页上显示的内容）。每次发版按实际情况改这里；
+// 面向使用者，写清楚"这一版变了什么"，不写实现细节。
+const RELEASE_NOTES = [
+  '## 更新内容',
+  '',
+  '- **完善积分目标标准**：所有板块总积分目标定为 25 分，「当前累计积分」卡片直接显示整体进度、已得多少、还差几分。',
+  '- **修复若干问题**',
+  '  - 桌面提醒不再连带弹出一个空的黑色命令行窗口。',
+  '  - 提醒窗口不再 60 秒自己消失（人离开一会儿就再也看不到同一条提醒）。',
+  '  - 「在线 / 缓存 / 登录失效」的判定更准确，数据停在旧时间会直接标出停了多少。',
+  '  - 登录态失效后会主动提醒，不再静默停止更新。',
+  '- **优化排版**：累计积分卡片改为「数字 + 进度条 + 目标提示」，状态与数值对齐更整齐。',
+  '- 登录失效提醒支持「确认」与「稍后提醒我」，后者可悬停选择 15 分钟 / 30 分钟 / 1 小时 / 2 小时后再说。',
+  '',
+  '## 怎么用',
+  '',
+  '1. 下载本 Release 的 `weiyang-monitor-github.zip` 并解压。',
+  '2. 双击 `run-monitor.cmd`，首次会自动安装依赖并打开登录窗口。',
+  '3. 面板地址 <http://127.0.0.1:8787/>。',
+  '',
+  '从旧版升级：覆盖文件后双击 `restart-monitor.cmd`，再双击 `relogin-monitor.cmd` 重新登录一次。',
+  '',
+  '## 说明',
+  '',
+  '- 数据源固定为未央雨课堂个人主页，页面没提供的字段保持为空，不做推测。',
+  '- 仓库不含登录态、Cookie 或任何 token。',
+  '- 仅支持 Windows；开机自启与桌面提醒依赖 Windows 自带组件。'
+].join('\n');
 
 const ROOT = path.join(__dirname, '..');
 
@@ -162,6 +194,18 @@ function uploadAsset(uploadUrl, name, filePath) {
 }
 
 (async () => {
+  // —— 只更新 Release 说明（--notes-only）：不建 commit、不动附件。
+  if (NOTES_ONLY) {
+    console.log('=== 只更新 Release ' + TAG + ' 的说明 ===');
+    const existing = await api('GET', '/repos/' + REPO + '/releases/tags/' + TAG);
+    const updated = await api('PATCH', '/repos/' + REPO + '/releases/' + existing.id, {
+      name: '未央成长活动提醒 ' + TAG,
+      body: RELEASE_NOTES
+    });
+    console.log('  已更新: ' + updated.html_url);
+    console.log('  说明字数: ' + RELEASE_NOTES.length);
+    return;
+  }
   // —— 0. 前置检查
   for (const f of FILES) {
     if (!fs.existsSync(path.join(ROOT, f.split('/').join(path.sep)))) {
@@ -254,37 +298,7 @@ function uploadAsset(uploadUrl, name, filePath) {
   // —— 6. 建 Release
   console.log('');
   console.log('=== 6. 创建 Release ' + TAG + ' ===');
-  const notes = [
-    '未央成长活动提醒 / 活动积分监测器 首个发布版。',
-    '',
-    '## 这个包能做什么',
-    '',
-    '- 定时抓取未央雨课堂的活动列表与个人积分，在本地面板上展示正在报名中的活动',
-    '- 显示可获得积分与当前累计积分，点「去报名」直接跳转活动页面',
-    '- 发现新活动时弹 Windows 桌面通知，扫描频率可调（15 / 30 / 60 分钟）',
-    '- 后台用无头 Edge / Chrome 复用已登录会话，不保存密码',
-    '',
-    '## 怎么用',
-    '',
-    '源码方式（推荐，便于按自己情况改选择器）：',
-    '',
-    '```powershell',
-    'npm install',
-    'npm run install-browser',
-    'npm run login',
-    'npm start',
-    '```',
-    '',
-    '面板地址 <http://127.0.0.1:8787/>。详细步骤见仓库 README。',
-    '',
-    '想直接跑：下载本 Release 里的 `weiyang-monitor-github.zip`，解压后双击 `run-monitor.cmd`。',
-    '',
-    '## 说明',
-    '',
-    '- 数据源固定为未央雨课堂个人主页，页面没提供的字段保持为空，不做推测。',
-    '- 仓库不含登录态、Cookie 或任何 token。',
-    '- 需要在 Windows 上运行；开机自启与桌面通知依赖 Windows 自带组件。'
-  ].join('\n');
+  const notes = RELEASE_NOTES;
 
   let release;
   try {
@@ -298,10 +312,14 @@ function uploadAsset(uploadUrl, name, filePath) {
     });
     console.log('  release: ' + release.html_url);
   } catch (e) {
-    // 已存在同 tag 时，复用它（避免重复发布失败）
+    // 已存在同 tag 时复用它，并把说明/标题更新成当前的，避免发布页停留在旧文案。
     if (!/-> 422/.test(e.message)) throw e;
-    console.log('  tag 已存在，复用现有 Release');
-    release = await api('GET', '/repos/' + REPO + '/releases/tags/' + TAG);
+    console.log('  tag 已存在，复用现有 Release 并更新说明');
+    const current = await api('GET', '/repos/' + REPO + '/releases/tags/' + TAG);
+    release = await api('PATCH', '/repos/' + REPO + '/releases/' + current.id, {
+      name: '未央成长活动提醒 ' + TAG,
+      body: notes
+    });
   }
 
   // —— 7. 上传 zip 附件
