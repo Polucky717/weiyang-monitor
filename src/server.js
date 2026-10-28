@@ -83,10 +83,16 @@ const CODE_VERSION = (() => {
   } catch { return 'unknown'; }
 })();
 
+// 登录失效是"必须用户动手才能恢复"的故障，所以提醒方式比活动提醒更强：
+// 窗口不自动关闭（人不在时回来还看得见），而且只要问题还在就反复提醒 ——
+// 用户很可能顺手把窗口关掉、然后继续不看。3 小时一次而不是每轮扫描一次：
+// 扫描是半小时一轮，那样会很快变成噪音，最后被彻底无视。
+const AUTH_REMIND_INTERVAL_MS = 3 * 60 * 60 * 1000;
+
 let lastState = {
   // totalPointTarget 放在 backend 里：成功时会重建 backend，失败时用 [...lastState.backend]
   // 展开保留，从磁盘缓存恢复时也被默认值兜住 —— 三个路径下前端都能拿到这个目标。
-  backend: { status: 'starting', lastScan: null, authRequired: false, error: null, newCount: 0, scanSuccessful: false, totalPointTarget: totalPointTarget() },
+  backend: { status: 'starting', lastScan: null, authRequired: false, error: null, newCount: 0, scanSuccessful: false, totalPointTarget: totalPointTarget(), authRemindedAt: null },
   activities: [],
   sections: [],
   points: [],
@@ -1944,29 +1950,38 @@ async function scan() {
     const wasAuthRequired = lastState.backend?.authRequired === true;
     lastState = { ...lastState, backend: { ...lastState.backend, status: error.authRequired ? 'auth_required' : 'error', lastScan: lastState.backend.lastScan, authRequired: Boolean(error.authRequired), error: error.message, scanSuccessful: Boolean(lastState.backend.scanSuccessful), codeVersion: CODE_VERSION } };
     trace(`扫描失败：${error.message}`);
-    // 登录失效**必须主动提醒**。
+    // 登录失效**必须主动提醒**，而且要比活动提醒更"缠人"。
     //
     // 以前只把状态改成 auth_required 就结束了，没有任何通知 —— 于是登录态
     // 静默失效，用户只能靠自己发现界面上的积分不再更新（实测就是这个后果：
     // 会话掉了之后没人知道）。这类"需要用户动手才能恢复"的故障，
     // 一定要推到他面前。
     //
-    // 只在"从正常变成失效"这一刻提醒一次：否则每 30 分钟一轮询就弹一次，
-    // 很快就会被用户当成噪音无视。
-    if (error.authRequired && !wasAuthRequired) {
+    // 提醒策略：
+    //   1) 刚失效时立刻弹一次；
+    //   2) 窗口不自动关闭（0）—— 人不在时，回来还看得见，和活动提醒一致；
+    //   3) 只要还失效，每 3 小时再弹一次：用户很可能顺手关掉窗口就不管了，
+    //      只弹一次等于没有第二次机会。频率不能跟着扫描（半小时一轮）
+    //      走，否则会被当成噪音。这里用 authRemindedAt 落盘，重启后也不会重复轰炸。
+    const lastAuthRemind = Number(lastState.backend?.authRemindedAt || 0);
+    const firstAuthFailure = !wasAuthRequired;
+    const authRemindDue = Date.now() - lastAuthRemind >= AUTH_REMIND_INTERVAL_MS;
+    if (error.authRequired && (firstAuthFailure || authRemindDue)) {
       // 记一行日志。原来通知成功/失败都不落盘，事后完全无法判断它到底弹过没有 ——
       // 而"用户没看到通知"和"通知没发出去"是两种不同的故障，必须能区分。
-      trace('[通知] 登录失效提醒：即将弹出 Windows 通知（只在状态从正常转为失效时弹一次）');
+      trace(firstAuthFailure
+        ? '[通知] 登录失效提醒：即将弹出（首次失效，窗口不会自动关闭，之后每 3 小时再提醒）'
+        : '[通知] 登录失效提醒：仍在失效状态，距上次提醒已超过 3 小时，再弹一次');
+      lastState = { ...lastState, backend: { ...lastState.backend, authRemindedAt: Date.now() } };
       notifyWindows(
         '未央观察站：登录已失效',
         '监测已暂停（积分不再更新）。请双击 relogin-monitor.cmd 重新登录。',
-        // 20 = 20 秒后自动关闭。注意 0 现在的含义是“永不自动关闭”（活动提醒用），
-        // 登录失效这条仍用 20 秒：避免一个必须重新登录才能消掉的窗口长期占屏。
-        20,
+        // 0 = 永不自动关闭。这条提醒必须等到用户处理，不能自己消失。
+        0,
         '',
         ''
       ).then((result) => {
-        if (result.ok) trace('[通知] 登录失效提醒：已弹出');
+        if (result.ok) trace('[通知] 登录失效提醒：已弹出（不自动关闭）');
         else {
           trace(`[通知] 登录失效提醒：失败 ${result.error}`);
           console.error(`Windows 登录失效通知失败：${result.error}`);

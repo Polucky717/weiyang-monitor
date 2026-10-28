@@ -46,10 +46,16 @@ check('日志区分“计划显示”与“不自动关闭”', /不自动关闭
 check('关闭时记录原因（自动超时 / 手动）', /自动超时/.test(ps1) && /手动关闭或点了立刻报名/.test(ps1));
 
 console.log('');
-console.log('=== 4. 登录失效提醒保持 20 秒自动关闭 ===');
-// 这条是“必须重登才能消掉”的状态，长期占屏反而烦人，所以保留自动关闭
-check('登录失效提醒传 20', /'未央观察站：登录已失效'[\s\S]{0,400}?\n\s*20,/.test(server));
-check('注释说明了 0 与正数的区别', /0 现在的含义是“永不自动关闭”/.test(server));
+console.log('=== 4. 登录失效提醒：不自动关闭，且会反复提醒 ===');
+// 这条是"必须重登才能消掉"的状态。原来给 20 秒自动关闭 + 只弹一次，
+// 用户不在的时候照样错过（和活动提醒同一个教训）。
+check('登录失效提醒传 0（不自动关闭）', /'未央观察站：登录已失效'[\s\S]{0,700}?\n\s*0,/.test(server));
+check('定义了重复提醒间隔（3 小时）', /const AUTH_REMIND_INTERVAL_MS = 3 \* 60 \* 60 \* 1000;/.test(server));
+check('首次失效立刻提醒、之后按间隔补提醒', /firstAuthFailure \|\| authRemindDue/.test(server));
+check('重复提醒受“上次提醒时间”限制', /Date\.now\(\) - lastAuthRemind >= AUTH_REMIND_INTERVAL_MS/.test(server));
+check('提醒后把时间写回状态（重启也不会重复轰炸）', /authRemindedAt: Date\.now\(\)/.test(server));
+check('默认状态里有 authRemindedAt 字段', /authRemindedAt: null/.test(server));
+check('文案指向 relogin-monitor.cmd', server.includes('请双击 relogin-monitor.cmd 重新登录'));
 
 console.log('');
 console.log('=== 5. 测试入口与真实提醒行为一致 ===');
